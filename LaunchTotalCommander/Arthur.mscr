@@ -1,0 +1,22 @@
+# The matching .exe and MortScript.exe must be beside this script.
+# All paths are relative to this script; no SDMEM mount is assumed.
+folder = SystemPath("ScriptPath")
+target = folder \ "cecmd.exe"
+original = folder \ "OriginalApp.exe"
+
+If (FileExists(original))
+    selected = Choice("Montero SD tools", "Use while parked. Choose an application.", 1, 0, "Total Commander", "Original app / CarPlay", "Exit")
+    If (selected = 2)
+        target = original
+    ElseIf (selected <> 1)
+        Exit
+    EndIf
+EndIf
+
+If (NOT FileExists(target))
+    Message("Missing application: " & target, "Montero SD tools")
+    Exit
+EndIf
+
+# No registry edits, process termination, driver loading, or CAN commands.
+Run(target)
