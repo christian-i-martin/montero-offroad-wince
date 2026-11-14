@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "map.h"
 #include "model.h"
 #include "render.h"
 #include "sun.h"
@@ -27,6 +28,7 @@ static void reset(void)
     in.gps.have_gga = 1; in.gps.fix_quality = 1; in.gps.satellites = 9;
     in.gps.speed_dkmh = 100; in.gps.course_ddeg = 1270; in.gps.altitude_dm = 2790;
     in.gps.have_time = 1; in.gps.utc_seconds = 12 * 3600;
+    in.gps.have_date = 1; in.gps.year = 2024; in.gps.month = 12; in.gps.day = 21;
     in.gps.have_position = 1; in.gps.lat_e6 = 51507400; in.gps.lon_e6 = -127800;
     in.car_fresh = 1;
     in.car.have_compass = 1; in.car.compass = 4;
@@ -197,6 +199,50 @@ static void test_climb(void)
     CHECK(!m.have_climb);
 }
 
+static void test_clock(void)
+{
+    long days;
+    int y, mo, d;
+
+    reset();                        /* the unit's clock agrees with GPS: clock from GPS, zone 0 */
+    step(1);
+    CHECK(m.clock_valid && m.clock_src == SRC_GPS && m.utc_offset_min == 0 && m.hour == 12 && m.minute == 0);
+
+    reset();                        /* this car: the unit's clock says 2012, so its time-zone setting */
+    in.clock_valid = 0;
+    in.year = 2012; in.month = 6; in.day = 8; in.hour = 15; in.minute = 4;
+    in.system_utc_offset_min = 480;
+    in.gps.utc_seconds = 4 * 3600;  /* 04:00 UTC = 12:00 at UTC+8 */
+    step(1);
+    CHECK(m.clock_valid && m.clock_src == SRC_GPS && m.utc_offset_min == 480);
+    CHECK(m.hour == 12 && m.minute == 0 && m.year == 2024 && m.month == 12 && m.day == 21);
+    CHECK(m.have_since && m.since_hour == 12 && m.since_minute == 0);
+    in.tz_override = 1;             /* the menu choice wins */
+    in.tz_override_min = -300;
+    step(1);
+    CHECK(m.utc_offset_min == -300 && m.hour == 23 && m.day == 20);
+    in.gps_fresh = 0;               /* GPS lost: the clock keeps running from the last GPS time */
+    step(90);
+    CHECK(m.clock_valid && m.clock_src == SRC_GPS && m.hour == 23 && m.minute == 1);
+
+    reset();                        /* a receiver reporting the date 1024 weeks early */
+    days = sun_days_from_civil(2024, 12, 21) - 7168;
+    sun_civil_from_days(days, &y, &mo, &d);
+    in.gps.year = y; in.gps.month = mo; in.gps.day = d;
+    step(1);
+    CHECK(y < 2020 && m.year == 2024 && m.month == 12 && m.day == 21);
+
+    reset();                        /* no fix and no clock for 10 minutes: no time, then GPS */
+    in.clock_valid = 0;
+    in.gps.valid = 0;
+    step(600);
+    CHECK(!m.clock_valid && m.clock_src == SRC_NONE && !m.have_since);
+    in.gps.valid = 1;
+    step(1);
+    CHECK(m.clock_valid && m.hour == 12 && m.minute == 10);
+    CHECK(m.have_since && m.since_hour == 12 && m.since_minute == 0); /* still the start time */
+}
+
 static void test_sun(void)
 {
     double rise, set;
@@ -251,7 +297,8 @@ static void rec_poly(void *ctx, const DPoint *p, int n, int w, unsigned rgb)
             g_bad++;
 }
 static void rec_polygon(void *ctx, const DPoint *p, int n, unsigned f) { rec_poly(ctx, p, n, 1, f); }
-static void rec_circle(void *ctx, int cx, int cy, int r, unsigned f, unsigned b, int w) { g_calls++; }
+static unsigned g_circle_fill; /* fill of the last circle drawn (the map marker comes last) */
+static void rec_circle(void *ctx, int cx, int cy, int r, unsigned f, unsigned b, int w) { g_calls++; g_circle_fill = f; }
 static int g_width_percent = 50; /* character width as a share of the font size */
 static int rec_width(void *ctx, int font, const char *s)
 {
@@ -268,7 +315,77 @@ static void rec_text(void *ctx, int x, int baseline, int font, unsigned rgb, con
     }
 }
 
-static const Canvas g_rec = {NULL, rec_fill, rec_round, rec_poly, rec_polygon, rec_circle, rec_width, rec_text};
+static const Canvas g_rec = {NULL, rec_fill, rec_round, rec_poly, rec_polygon, rec_circle, rec_width, rec_text, NULL};
+
+static int g_map_calls, g_map_zoom;
+static int rec_map(void *ctx, int x, int y, int w, int h, int zoom, double px, double py, int night)
+{
+    g_calls++;
+    g_map_calls++;
+    g_map_zoom = zoom;
+    if (x < 0 || y < 0 || x + w > SCREEN_W || y + h > SCREEN_H || px <= 0 || py <= 0)
+        g_bad++;
+    return MAP_SHOWN;
+}
+
+/* Speed graph sampling, the speed panel and the map tile in its states. */
+static void test_speed_and_map(void)
+{
+    Canvas with_map = g_rec;
+    float v;
+    unsigned t;
+
+    with_map.map = rec_map;
+    reset();
+    in.gps.speed_dkmh = 360;
+    step(61);                               /* a graph point at once, then every 5 s */
+    CHECK(m.speed.count == 13);
+    CHECK(series_get(&m.speed, 12, &v, &t) && NEAR(v, 36.0, 0.01));
+    in.gps_fresh = 0;                       /* no GPS: no points */
+    step(20);
+    CHECK(m.speed.count == 13);
+    in.gps_fresh = 1;
+    in.gps.speed_dkmh = 15;                 /* parked: 0 km/h */
+    step(10);
+    CHECK(m.speed.count > 13 && series_get(&m.speed, m.speed.count - 1, &v, NULL) && v == 0.0f);
+
+    g_texts[0] = '\0';
+    g_bad = g_map_calls = 0;
+    render_dashboard(&with_map, &m);        /* no map files yet */
+    CHECK(g_bad == 0 && g_map_calls == 0 && strstr(g_texts, "No map files") != NULL);
+    CHECK(strstr(g_texts, "|SPEED|") == NULL); /* labels are drawn letter by letter */
+    CHECK(strstr(g_texts, "Last 10 min") && strstr(g_texts, "|Avg|") && strstr(g_texts, "|Top|"));
+    CHECK(strstr(g_texts, "|36|Top|") != NULL);  /* top speed 36 */
+
+    m.map_min_zoom = 8;
+    m.map_max_zoom = 15;
+    m.map_zoom = 14;
+    g_texts[0] = '\0';
+    render_dashboard(&g_rec, &m);           /* a platform without map drawing */
+    CHECK(strstr(g_texts, "No map files") != NULL);
+    g_texts[0] = '\0';
+    render_dashboard(&with_map, &m);
+    CHECK(g_bad == 0 && g_map_calls == 1 && g_map_zoom == 14);
+    CHECK(strstr(g_texts, "North up") == NULL && strstr(g_texts, "\xC2\xA9 OpenStreetMap")); /* no title */
+    CHECK(strstr(g_texts, "|200 m|") != NULL); /* London at zoom 14: about 6 m per pixel */
+    CHECK(render_map_hit(759, 80) == MAPHIT_ZOOM_IN);  /* 6 px in from the tile's top right */
+    CHECK(render_map_hit(759, 130) == MAPHIT_ZOOM_OUT);
+    CHECK(render_map_hit(600, 200) == MAPHIT_NONE && render_map_hit(752, 300) == MAPHIT_NONE);
+
+    in.gps_fresh = 0;                       /* GPS lost: the last position stays on the map */
+    step(1);
+    g_texts[0] = '\0';
+    render_dashboard(&with_map, &m);
+    CHECK(g_map_calls == 2 && g_circle_fill == 0xA3ADB7); /* the marker turns grey (muted) */
+
+    dash_init(&m);                          /* map files but no position yet */
+    m.map_min_zoom = 8;
+    m.map_max_zoom = 15;
+    g_texts[0] = '\0';
+    g_bad = 0;
+    render_dashboard(&with_map, &m);
+    CHECK(g_bad == 0 && g_map_calls == 2 && strstr(g_texts, "Waiting for GPS") != NULL);
+}
 
 static void test_render(void)
 {
@@ -317,10 +434,13 @@ static void test_render(void)
     render_dashboard(&g_rec, &m);
     render_menu(&g_rec, &m, 1, "0.1.0");
     CHECK(g_bad == 0 && strstr(g_texts, "Collecting data") && strstr(g_texts, "Open file manager"));
-    CHECK(render_menu_hit(230, 200, 1) == MENU_FILES);
-    CHECK(render_menu_hit(230, 268, 1) == MENU_CLOSE);
-    CHECK(render_menu_hit(230, 336, 1) == MENU_BACK);
-    CHECK(render_menu_hit(230, 200, 0) == MENU_CLOSE);
+    CHECK(strstr(g_texts, "Time zone") && strstr(g_texts, "|UTC|") && strstr(g_texts, "No clock yet"));
+    CHECK(render_menu_hit(230, 240, 1) == MENU_FILES);
+    CHECK(render_menu_hit(230, 308, 1) == MENU_CLOSE);
+    CHECK(render_menu_hit(230, 376, 1) == MENU_BACK);
+    CHECK(render_menu_hit(230, 240, 0) == MENU_CLOSE);
+    CHECK(render_menu_hit(390, 160, 1) == MENU_TZ_MINUS);
+    CHECK(render_menu_hit(560, 160, 1) == MENU_TZ_PLUS);
     CHECK(render_menu_hit(10, 10, 1) == MENU_NONE);
     CHECK(render_clock_hit(30, 20) && !render_clock_hit(300, 20) && !render_clock_hit(30, 100));
 }
@@ -334,8 +454,10 @@ int main(void)
     test_battery();
     test_weather_and_temperature();
     test_climb();
+    test_clock();
     test_sun();
     test_render();
+    test_speed_and_map();
     if (failures) {
         printf("%d failure(s)\n", failures);
         return 1;

@@ -36,7 +36,14 @@ The repository root mirrors the SD card root, plus reference material:
   800 x 480 layout, drawn through a small `Canvas` interface) and `src/sun.c` (sunset) are portable
   C; `src/dash.c` is the Windows CE program (GDI drawing, GPS thread, bus client copied from the
   probe). `fonts/` holds the Barlow TTFs (SIL OFL) shipped next to the exe. The agreed design is
-  the design canvas linked in the research doc's "Dashboard" section.
+  the design canvas linked in the research doc's "Dashboard" section. `src/map.c` (offline map:
+  reads `*.pack` files, composes the view) and `src/pngdec.c` (PNG decoding through the vendored
+  `third_party/stb_image.h`) are portable C too.
+- `tools/map/`: builds the offline map on the Mac (Luzon by default) from OpenStreetMap data:
+  `mtpack.py` (the `.pack` format, shared with `map.c`), `build_map.sh` (planetiler and
+  tileserver-gl in Docker, then `build_map.py`, the packer), `make_style.py` and
+  `style/montero-dark.json` (our own dark map style). Output `dist/map/Map/`, copied to the SD card
+  root as `\SD\Map\`.
 - `tools/re/`: reverse-engineering helpers for the head unit files.
 - `docs/vehicle-data-research.md`: what vehicle data exists on the unit and how it flows. Read this
   before any dashboard or data-access work, and update it when new findings land.
@@ -80,8 +87,25 @@ The previews go through the same `render.c` with text widths read from the Barlo
 show the real layout; `qlmanage -t -s 1600 -o DIR file.svg` turns one into a PNG (it crops to a
 square, so pad the SVG height first). A missing COREDLL import stops a CE exe from loading at all,
 so the dashboard looks up functions the probe never imported on the car (`Ellipse`, `RoundRect`,
-`Polygon`, `Polyline`, `GetTextFaceW`, `AddFontResourceW`) with `GetProcAddressW` and has fallbacks;
-compare new imports with the probe's (pefile) before adding direct calls.
+`Polygon`, `Polyline`, `GetTextFaceW`, `AddFontResourceW`, `CreateDIBSection`) with
+`GetProcAddressW` and has fallbacks; compare new imports with the probe's before adding direct calls
+(`arm-mingw32ce-objdump -p` in the build image lists them). GCC can add imports on its own:
+`malloc` plus `memset` becomes `calloc`, which is why `map.c` clears its cache with a loop and has
+its own logarithm.
+
+Offline map (Docker for planetiler and tileserver-gl, both native arm64; about 2 GB of downloads
+into `dist/map-build/` the first time; other running containers can starve planetiler of memory):
+
+```sh
+tools/map/build_map.sh                                   # Luzon, zoom 8 to 14 -> dist/map/Map
+tools/map/build_map.sh --min-zoom 15 --max-zoom 15       # add zoom 15 (separate pack file)
+tools/map/build_map.sh --bounds W,S,E,N --output DIR     # another area; must lie inside MAP_VECTOR_BOUNDS
+python3 tools/map/build_map.py --count --max-zoom 15     # tile counts only, no Docker
+python3 -m unittest tests.test_map_tools tests.test_map_reader -v   # packer, style, C map reader
+```
+
+`dashboard_preview FONT_DIR OUT_DIR MAP_DIR LAT LON` (built as in `tests/test_map_reader.py`)
+renders the previews with a real map composed by `map.c`.
 
 The Total Commander build refuses to overwrite an existing `--output` directory. On macOS,
 `test_verify_is_offline_and_read_only` fails because `verify_sd` resolves the `/var` to

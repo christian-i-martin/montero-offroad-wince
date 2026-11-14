@@ -5,7 +5,8 @@
  *              the last GPS-minus-car difference, only while GPS has no fix
  *   heading    GPS course while moving (on above 6 km/h, off below 4 km/h); the car's 8-point
  *              compass when stopped or without GPS
- *   speeds     average while moving and top speed, kept in memory since the dashboard started
+ *   speeds     average while moving and top speed, kept in memory since the dashboard started;
+ *              the speed graph holds the last 10 minutes (a point every 5 s, the mean of that time)
  * Portable C (no Windows headers) so it can be tested on the build machine. */
 #ifndef MODEL_H
 #define MODEL_H
@@ -39,12 +40,16 @@ enum { SUN_NONE, SUN_SUNSET, SUN_SUNRISE };
 #define SEALEVEL_EVERY_MS 90000u
 #define ELEVATION_EVERY_M 250.0f
 #define ELEVATION_POINTS 80
+#define SPEED_EVERY_MS 5000u         /* 120 x 5 s = 10 min */
+#define SPEED_WINDOW_MS 600000u
+#define MAP_DEFAULT_ZOOM 14
 
 typedef struct {
     unsigned now_ms;                  /* GetTickCount() */
-    int clock_valid;                  /* the unit's local clock */
+    int clock_valid;                  /* the unit's local clock looks set (year 2020 or later) */
     int year, month, day, hour, minute, second;
-    int system_utc_offset_min;        /* local minus UTC from the unit's settings (fallback) */
+    int system_utc_offset_min;        /* local minus UTC from the unit's time-zone setting */
+    int tz_override, tz_override_min; /* time zone chosen in the dashboard menu */
     int gps_fresh;                    /* an RMC sentence arrived in the last 3 s */
     NmeaState gps;
     int car_fresh;                    /* a CarInfo reply arrived in the last 30 s */
@@ -54,7 +59,11 @@ typedef struct {
 
 typedef struct {
     unsigned now_ms;
-    int hour, minute, clock_valid;
+    /* Local time: GPS time plus the time zone when GPS time has been seen (the unit's clock resets
+     * to 2012 on this car), otherwise the unit's clock if it looks set. */
+    int clock_valid, clock_src;       /* SRC_GPS, SRC_CAR (the head unit's clock) or SRC_NONE */
+    int year, month, day, hour, minute, second;
+    int utc_offset_min;               /* in use: menu choice, else the unit's clock or setting */
     int gps_ok, satellites, car_ok, night;
 
     int have_speed;   float speed_kmh;
@@ -69,7 +78,11 @@ typedef struct {
     int have_since;    int since_hour, since_minute;
     int sun_event;     int sun_hour, sun_minute, sun_minutes_left;   /* minutes_left for SUN_SUNSET */
 
-    Series pressure, elevation, outside, battery;
+    Series pressure, elevation, outside, battery, speed;
+
+    /* map view, set by the program (dash.c), not by dash_update: zoom level shown and the range
+     * the map files hold (map_max_zoom < 0 when there are no map files) */
+    int map_zoom, map_min_zoom, map_max_zoom;
 
     /* internal */
     int started;
@@ -78,12 +91,15 @@ typedef struct {
     int have_offset; float car_offset;          /* GPS elevation minus the car's elevation */
     int gps_heading;                            /* hysteresis state */
     float speeds[3]; int speed_count;
+    float speed_sum; int speed_n; unsigned speed_ms;   /* speed graph point being collected */
     double moving_m, moving_s, elev_dist_m;
     float climb_v[24]; unsigned climb_t[24]; int climb_count, climb_next, climb_src; unsigned climb_last_ms;
     Series sealevel;
     unsigned pressure_ms, outside_ms, battery_ms, sealevel_ms;
     int have_position; double lat, lon;
     unsigned sun_ms; int sun_valid;
+    int have_utc; double utc_base; unsigned utc_base_ms;   /* seconds since 1970 at a tick */
+    unsigned start_ms;
 } DashModel;
 
 void dash_init(DashModel *m);

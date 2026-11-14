@@ -6,6 +6,7 @@
  *   CarInfo   joins Main.exe's message bus as "TerminalA" (0x1A), reads the shared-memory ring and
  *             posts the factory Car Info screen's read requests with sender 0x14 every 5 s
  *   lights    window message 0x52A index 9 broadcast by Main.exe, and CarInfo frame 0x33
+ *   map       *.pack files in the Map folder at the SD card root (tools/map/), opened read-only
  * Main.exe shows and hides this program by its window title "GPS - Navigation" (SP_MAIN.ini).
  * Hold the clock for 2 seconds for the menu (file manager, close).
  * Never sends EndCommunication (81 01 00), 0x6D1 or 0x6D4; never writes to vehicle ports.
@@ -18,12 +19,13 @@
 
 #include "busring.h"
 #include "carinfo.h"
+#include "map.h"
 #include "model.h"
 #include "nmea.h"
 #include "render.h"
 #include "sun.h"
 
-#define DASH_VERSION "0.1.0"
+#define DASH_VERSION "0.2.0"
 #define WINDOW_CLASS L"MonteroDashboard"
 #define WINDOW_TITLE L"GPS - Navigation" /* SP_MAIN.ini [NAVIGATION] TITLE */
 
@@ -122,6 +124,83 @@ static int g_lights;               /* last lights state seen on the bus */
 static DashModel g_model;
 static int g_menu, g_has_files;
 static WCHAR g_files_path[MAX_PATH];
+#define DEFAULT_UTC_OFFSET_MIN 480 /* UTC+8 until another time zone is chosen in the menu */
+static int g_tz_set = 1, g_tz_min = DEFAULT_UTC_OFFSET_MIN; /* time zone in use, minutes from UTC */
+
+/* dashboard-settings.txt next to the exe, one line: utc_offset_minutes=<n> */
+static void settings_path(WCHAR *path)
+{
+    _snwprintf(path, MAX_PATH, L"%sdashboard-settings.txt", g_dir);
+    path[MAX_PATH - 1] = 0;
+}
+
+/* First place where key (len characters) appears in text, or NULL. Written out
+   instead of strstr, which no program has imported from COREDLL on the car yet. */
+static const char *find_text(const char *text, const char *key, int len)
+{
+    int i;
+    for (; *text; text++) {
+        for (i = 0; i < len && text[i] == key[i]; i++)
+            ;
+        if (i == len)
+            return text;
+    }
+    return NULL;
+}
+
+static void load_settings(void)
+{
+    static const char key[] = "utc_offset_minutes=";
+    WCHAR path[MAX_PATH];
+    char buf[128];
+    const char *p;
+    DWORD got = 0;
+    HANDLE h;
+    int sign = 1, v = 0, digits = 0;
+
+    settings_path(path);
+    h = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) {
+        log_line("[clock] time zone %+d min (the default; change it in the menu)", g_tz_min);
+        return;
+    }
+    if (!ReadFile(h, buf, sizeof buf - 1, &got, NULL))
+        got = 0;
+    CloseHandle(h);
+    buf[got] = '\0';
+    p = find_text(buf, key, (int)sizeof key - 1);
+    if (p == NULL)
+        return;
+    p += sizeof key - 1;
+    if (*p == '-' || *p == '+')
+        sign = *p++ == '-' ? -1 : 1;
+    for (; *p >= '0' && *p <= '9' && digits < 4; p++, digits++)
+        v = v * 10 + (*p - '0');
+    v *= sign;
+    if (digits && v >= -720 && v <= 840) {
+        g_tz_set = 1;
+        g_tz_min = v;
+        log_line("[clock] time zone from dashboard-settings.txt: %+d min", v);
+    }
+}
+
+static void save_settings(void)
+{
+    WCHAR path[MAX_PATH];
+    char line[48];
+    DWORD written;
+    HANDLE h;
+    int len = _snprintf(line, sizeof line, "utc_offset_minutes=%d\r\n", g_tz_min);
+
+    settings_path(path);
+    h = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) {
+        log_line("[clock] cannot save dashboard-settings.txt (error %lu)", GetLastError());
+        return;
+    }
+    WriteFile(h, line, (DWORD)len, &written, NULL);
+    CloseHandle(h);
+}
 
 /* ---------------------------------------------------------------- GPS (read-only) */
 
@@ -670,6 +749,166 @@ static void gdi_text(void *ctx, int x, int baseline, int font, unsigned rgb, con
 static HDC g_back;
 static HBITMAP g_back_bitmap;
 
+/* ---------------------------------------------------------------- offline map (read-only) */
+
+/* The map files sit in a Map folder at the SD card root, beside the Navigation folder, so that
+ * installing a new dashboard does not mean copying the map again. map.c composes the picture
+ * into a 16-bit DIB section (a bitmap whose pixels the program can write), which is then copied
+ * onto the back buffer. */
+typedef HBITMAP (WINAPI *dib_section_fn)(HDC, const BITMAPINFO *, UINT, void **, HANDLE, DWORD);
+static MapSet g_map;
+static int g_map_ok, g_map_said;
+static HDC g_map_dc;
+static HBITMAP g_map_bitmap;
+static HGDIOBJ g_map_old;
+static unsigned short *g_map_bits;
+static int g_map_w, g_map_h, g_map_stride;
+static DWORD g_map_slowest_ms;
+
+static int file_read_at(void *file, unsigned offset, void *buffer, unsigned size)
+{
+    LONG high = 0;
+    DWORD got = 0;
+    if (SetFilePointer((HANDLE)file, (LONG)offset, &high, FILE_BEGIN) == 0xFFFFFFFF && GetLastError() != NO_ERROR)
+        return -1;
+    if (!ReadFile((HANDLE)file, buffer, size, &got, NULL))
+        return -1;
+    return (int)got;
+}
+
+static void map_open(void)
+{
+    WCHAR root[MAX_PATH], folder[MAX_PATH], path[MAX_PATH], *slash;
+    WIN32_FIND_DATAW found;
+    HANDLE find;
+    int bad = 0;
+
+    if (!map_init(&g_map, 12)) {
+        log_line("[map] not enough memory for the map");
+        return;
+    }
+    g_map_ok = 1;
+    wcscpy(root, g_dir); /* "\SD\Navigation\" -> "\SD\" */
+    if (wcslen(root) > 1)
+        root[wcslen(root) - 1] = 0;
+    slash = wcsrchr(root, L'\\');
+    if (slash)
+        slash[1] = 0;
+    else
+        wcscpy(root, L"\\");
+    _snwprintf(folder, MAX_PATH, L"%sMap\\", root);
+    folder[MAX_PATH - 1] = 0;
+    _snwprintf(path, MAX_PATH, L"%s*.pack", folder);
+    path[MAX_PATH - 1] = 0;
+    find = FindFirstFileW(path, &found);
+    if (find != INVALID_HANDLE_VALUE) {
+        do {
+            HANDLE h;
+            _snwprintf(path, MAX_PATH, L"%s%s", folder, found.cFileName);
+            path[MAX_PATH - 1] = 0;
+            h = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+            if (h == INVALID_HANDLE_VALUE) {
+                bad++;
+            } else if (!map_add_pack(&g_map, h, file_read_at)) {
+                CloseHandle(h);
+                bad++;
+            }
+        } while (FindNextFileW(find, &found));
+        FindClose(find);
+    }
+    if (g_map.count == 0) {
+        log_line("[map] no map files in the Map folder at the SD card root (%d unreadable)", bad);
+        return;
+    }
+    g_model.map_min_zoom = g_map.min_zoom;
+    g_model.map_max_zoom = g_map.max_zoom;
+    if (g_model.map_zoom > g_map.max_zoom)
+        g_model.map_zoom = g_map.max_zoom;
+    if (g_model.map_zoom < g_map.min_zoom)
+        g_model.map_zoom = g_map.min_zoom;
+    while (g_model.map_zoom > g_map.min_zoom && !map_has_zoom(&g_map, g_model.map_zoom))
+        g_model.map_zoom--;
+    log_line("[map] %d map files, zoom %d to %d, showing %d (%d unreadable)", g_map.count, g_map.min_zoom,
+             g_map.max_zoom, g_model.map_zoom, bad);
+}
+
+/* One zoom level in or out, skipping levels the map files do not have. */
+static void map_step(int direction)
+{
+    int z = g_model.map_zoom + direction;
+    while (z >= g_map.min_zoom && z <= g_map.max_zoom && !map_has_zoom(&g_map, z))
+        z += direction;
+    if (z >= g_map.min_zoom && z <= g_map.max_zoom)
+        g_model.map_zoom = z;
+}
+
+static int map_bitmap(int w, int h)
+{
+    struct { BITMAPINFOHEADER h; DWORD masks[3]; } info;
+    dib_section_fn create;
+    HMODULE core;
+    void *bits = NULL;
+
+    if (g_map_bitmap && g_map_w == w && g_map_h == h)
+        return 1;
+    core = GetModuleHandleW(L"coredll.dll");
+    create = core ? (dib_section_fn)GetProcAddressW(core, L"CreateDIBSection") : NULL;
+    if (g_map_dc == NULL)
+        g_map_dc = CreateCompatibleDC(g_back);
+    if (create == NULL || g_map_dc == NULL) {
+        if (!g_map_said++)
+            log_line("[map] CreateDIBSection %s; no map picture", create ? "found but no drawing context" : "missing");
+        return 0;
+    }
+    if (g_map_bitmap) {
+        SelectObject(g_map_dc, g_map_old);
+        DeleteObject(g_map_bitmap);
+        g_map_bitmap = NULL;
+    }
+    memset(&info, 0, sizeof info);
+    info.h.biSize = sizeof info.h;
+    info.h.biWidth = w;
+    info.h.biHeight = h; /* bottom-up, which every Windows CE version supports */
+    info.h.biPlanes = 1;
+    info.h.biBitCount = 16;
+    info.h.biCompression = BI_BITFIELDS;
+    info.masks[0] = 0xF800; /* RGB565 */
+    info.masks[1] = 0x07E0;
+    info.masks[2] = 0x001F;
+    g_map_bitmap = create(g_map_dc, (const BITMAPINFO *)&info, DIB_RGB_COLORS, &bits, NULL, 0);
+    if (g_map_bitmap == NULL || bits == NULL) {
+        if (!g_map_said++)
+            log_line("[map] cannot create the map bitmap (error %lu)", GetLastError());
+        g_map_bitmap = NULL;
+        return 0;
+    }
+    g_map_old = SelectObject(g_map_dc, g_map_bitmap);
+    g_map_bits = (unsigned short *)bits;
+    g_map_w = w;
+    g_map_h = h;
+    g_map_stride = ((w * 2 + 3) & ~3) / 2; /* rows are padded to 4 bytes */
+    return 1;
+}
+
+static int gdi_map(void *ctx, int x, int y, int w, int h, int zoom, double px, double py, int night)
+{
+    DWORD start = GetTickCount(), took;
+    int result;
+    if (!g_map_ok || g_map.count == 0)
+        return MAP_NO_FILES;
+    if (!map_bitmap(w, h)) {
+        gdi_fill_rect(ctx, x, y, w, h, MAP_OUTSIDE_RGB);
+        return MAP_OUTSIDE;
+    }
+    /* bottom-up bitmap: the top row is the last one in memory */
+    result = map_compose(&g_map, g_map_bits + (long)(h - 1) * g_map_stride, w, h, -g_map_stride, zoom, px, py, night);
+    BitBlt((HDC)ctx, x, y, w, h, g_map_dc, 0, 0, SRCCOPY);
+    took = GetTickCount() - start;
+    if (took > g_map_slowest_ms)
+        g_map_slowest_ms = took;
+    return result;
+}
+
 static void paint(HDC target)
 {
     Canvas c;
@@ -681,6 +920,7 @@ static void paint(HDC target)
     c.circle = gdi_circle;
     c.text_width = gdi_text_width;
     c.text = gdi_text;
+    c.map = gdi_map;
     render_dashboard(&c, &g_model);
     if (g_menu)
         render_menu(&c, &g_model, g_has_files, DASH_VERSION);
@@ -716,7 +956,16 @@ static void tick(void)
     in.car = g_car;
     in.car_fresh = g_car_tick != 0 && now - g_car_tick < 30000;
     in.lights_on = g_lights;
+    in.tz_override = g_tz_set;
+    in.tz_override_min = g_tz_min;
     dash_update(&g_model, &in);
+    if (g_model.clock_src == SRC_GPS) { /* once: what the GPS clock gave against the unit's clock */
+        static int logged;
+        if (!logged++)
+            log_line("[clock] GPS time: %04d-%02d-%02d %02d:%02d local, UTC%+d min (time-zone setting %+d min)",
+                     g_model.year, g_model.month, g_model.day, g_model.hour, g_model.minute,
+                     g_model.utc_offset_min, in.system_utc_offset_min);
+    }
 }
 
 static void log_stats(void)
@@ -731,6 +980,9 @@ static void log_stats(void)
              g_bus.active ? "on" : "off", g_bus.records, g_bus.replies, g_bus.tx, g_bus.tx_failed, g_bus.ring.resyncs,
              g_model.elev_src == SRC_GPS ? "GPS" : g_model.elev_src == SRC_CAR ? "car" : "none",
              g_model.heading_src == SRC_GPS ? "GPS" : g_model.heading_src == SRC_CAR ? "car" : "none");
+    if (g_map.count > 0)
+        log_line("[map] zoom %d, %u tiles decoded, %u failed, %u read errors, slowest map draw %lu ms",
+                 g_model.map_zoom, g_map.decoded, g_map.failed, g_map.read_errors, g_map_slowest_ms);
 }
 
 /* ---------------------------------------------------------------- window */
@@ -780,11 +1032,27 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpa
     case WM_LBUTTONDOWN: {
         int x = (short)LOWORD(lparam), y = (short)HIWORD(lparam);
         if (g_menu) {
-            switch (render_menu_hit(x, y, g_has_files)) {
+            int hit = render_menu_hit(x, y, g_has_files);
+            switch (hit) {
             case MENU_FILES: g_menu = 0; open_file_manager(); break;
             case MENU_CLOSE: log_line("[menu] close"); DestroyWindow(hwnd); return 0;
             case MENU_BACK: g_menu = 0; break;
+            case MENU_TZ_MINUS:
+            case MENU_TZ_PLUS: { /* 30-minute steps from the zone in use, UTC-12 to UTC+14 */
+                int v = g_model.utc_offset_min + (hit == MENU_TZ_PLUS ? 30 : -30);
+                v = v < -720 ? -720 : v > 840 ? 840 : v;
+                g_tz_set = 1;
+                g_tz_min = v;
+                save_settings();
+                g_model.sun_valid = 0; /* work the sunset out again at once */
+                tick();
+                log_line("[menu] time zone %+d min", v);
+                break;
             }
+            }
+            InvalidateRect(hwnd, NULL, FALSE);
+        } else if (render_map_hit(x, y) != MAPHIT_NONE && g_map.count > 0 && g_model.have_position) {
+            map_step(render_map_hit(x, y) == MAPHIT_ZOOM_IN ? 1 : -1);
             InvalidateRect(hwnd, NULL, FALSE);
         } else if (render_clock_hit(x, y)) {
             SetTimer(hwnd, TIMER_HOLD, 2000, NULL);
@@ -847,7 +1115,15 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous, LPWSTR command_line, 
     _snwprintf(g_files_path, MAX_PATH, L"%sTotalCommander\\cecmd.exe", g_dir);
     g_files_path[MAX_PATH - 1] = 0;
     g_has_files = GetFileAttributesW(g_files_path) != 0xFFFFFFFF;
+    {
+        SYSTEMTIME lt;
+        GetLocalTime(&lt);
+        if (lt.wYear < 2020)
+            log_line("[clock] the head unit's clock is not set (year %d): the clock waits for GPS time", lt.wYear);
+    }
+    load_settings();
     dash_init(&g_model);
+    map_open();
 
     memset(&wc, 0, sizeof wc);
     wc.lpfnWndProc = main_proc;

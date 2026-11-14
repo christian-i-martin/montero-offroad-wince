@@ -1,5 +1,7 @@
 #include "render.h"
 
+#include "map.h"
+
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -17,10 +19,9 @@ const FontSpec render_fonts[FONT_COUNT] = {
     {12, FACE_MEDIUM},    /* FONT_SMALL */
     {13, FACE_MEDIUM},    /* FONT_TREND */
     {15, FACE_MEDIUM},    /* FONT_UNIT */
-    {19, FACE_MEDIUM},    /* FONT_UNIT_BIG */
     {34, FACE_CONDENSED}, /* FONT_VALUE */
-    {84, FACE_CONDENSED}, /* FONT_SPEED */
-    {64, FACE_CONDENSED}, /* FONT_STAT */
+    {56, FACE_CONDENSED}, /* FONT_SPEED */
+    {26, FACE_CONDENSED}, /* FONT_STAT: average and top speed */
     {46, FACE_CONDENSED}, /* FONT_HEADING */
     {26, FACE_SEMIBOLD},  /* FONT_DIR */
     {15, FACE_SEMIBOLD},  /* FONT_DIR_SMALL */
@@ -35,7 +36,8 @@ static const Theme g_night = {0x000000, 0x0A0C0E, 0x1A1F24, 0xC8CED4, 0x7E8892,
                               0xD68A12, 0x3E9CC4, 0xE0603A, 0x221B0E, 0x101418};
 
 /* Three columns and three rows below the header, 12 px apart (design canvas). */
-static const int COL_X[3] = {12, 274, 537}, COL_W[3] = {250, 251, 251};
+/* Widths 1:2:2 of the 752 px between the gaps: a narrow first column, two wide ones. */
+static const int COL_X[3] = {12, 174, 487}, COL_W[3] = {150, 301, 301};
 static const int ROW_Y[3] = {52, 195, 337}, ROW_H[3] = {131, 130, 131};
 
 enum { ICON_GPS, ICON_SUN, ICON_LIGHTS, ICON_UP, ICON_DOWN, ICON_FLAT, ICON_BOLT, ICON_BATTERY, ICON_WARN };
@@ -195,14 +197,20 @@ static void tile(const Canvas *c, const Theme *t, int x, int y, int w, int h)
 
 /* Tile name on the left, a note on the right; the short note is used when the long one would
  * touch the name (wider fallback fonts). */
+static void tile_header_pad(const Canvas *c, const Theme *t, int x, int y, int w, int pad, const char *name,
+                            const char *note, const char *short_note, unsigned note_rgb)
+{
+    int end = x + pad + label(c, x + pad, y + 24, t->muted, name) + 10;
+    if (short_note && x + w - pad - tw(c, FONT_SMALL, note) < end)
+        note = short_note;
+    if (x + w - pad - tw(c, FONT_SMALL, note) >= end)
+        text_right(c, x + w - pad, y + 24, FONT_SMALL, note_rgb, note);
+}
+
 static void tile_header2(const Canvas *c, const Theme *t, int x, int y, int w, const char *name, const char *note,
                          const char *short_note, unsigned note_rgb)
 {
-    int end = x + 17 + label(c, x + 17, y + 24, t->muted, name) + 10;
-    if (short_note && x + w - 17 - tw(c, FONT_SMALL, note) < end)
-        note = short_note;
-    if (x + w - 17 - tw(c, FONT_SMALL, note) >= end)
-        text_right(c, x + w - 17, y + 24, FONT_SMALL, note_rgb, note);
+    tile_header_pad(c, t, x, y, w, 17, name, note, short_note, note_rgb);
 }
 
 static void tile_header(const Canvas *c, const Theme *t, int x, int y, int w, const char *name, const char *note,
@@ -237,9 +245,10 @@ static void trend_right(const Canvas *c, int right, int baseline, int min_x, uns
 }
 
 /* Line graph of a series. Time series are placed by age over window_ms (newest at the right
- * edge); by_index series are evenly spaced per sample. The value range is at least min_span. */
+ * edge); by_index series are evenly spaced per sample. The value range is at least min_span;
+ * from_zero graphs start at 0 (speed). */
 static void chart(const Canvas *c, const Theme *t, const Series *s, Box b, unsigned now, unsigned window_ms,
-                  float min_span, unsigned rgb, int area, int by_index)
+                  float min_span, unsigned rgb, int area, int by_index, int from_zero)
 {
     DPoint p[SERIES_MAX + 2];
     float v, lo = 0, hi = 0;
@@ -260,7 +269,11 @@ static void chart(const Canvas *c, const Theme *t, const Series *s, Box b, unsig
         text(c, b.x + (b.w - tw(c, FONT_SMALL, msg)) / 2, b.y + b.h / 2 + 4, FONT_SMALL, t->muted, msg);
         return;
     }
-    if (hi - lo < min_span) {
+    if (from_zero) {
+        lo = 0.0f;
+        if (hi < min_span)
+            hi = min_span;
+    } else if (hi - lo < min_span) {
         float mid = (hi + lo) / 2.0f;
         lo = mid - min_span / 2.0f;
         hi = mid + min_span / 2.0f;
@@ -339,29 +352,56 @@ static void draw_header(const Canvas *c, const Theme *t, const DashModel *m)
 
 /* ---------------------------------------------------------------- tiles */
 
+/* Narrow tiles (first column, 150 px): name and graph window on top, the value, a status line
+ * under it, then the graph. NP is the padding inside the border. */
+#define NP 13
+
+/* Left-aligned status line with an optional 14 px icon; the short text is used when the long one
+ * does not fit in max_w, and nothing when neither does. */
+static void status_line(const Canvas *c, int x, int baseline, int max_w, unsigned rgb, int icon_kind,
+                        unsigned icon_rgb, const char *s, const char *short_s)
+{
+    int lead = icon_kind >= 0 ? 18 : 0;
+    if (lead + tw(c, FONT_TREND, s) > max_w)
+        s = short_s;
+    if (s == NULL || lead + tw(c, FONT_TREND, s) > max_w)
+        return;
+    if (icon_kind >= 0)
+        icon(c, icon_kind, x, baseline - 12, 14, icon_rgb);
+    text(c, x + lead, baseline, FONT_TREND, rgb, s);
+}
+
+static void narrow_chart_box(int x, int y, int w, int h, Box *b)
+{
+    b->x = x + NP;
+    b->w = w - 2 * NP;
+    b->y = y + 84;
+    b->h = y + h - 11 - b->y;
+}
+
 static void draw_pressure(const Canvas *c, const Theme *t, const DashModel *m, int x, int y, int w, int h)
 {
     char buf[16];
-    int right = x + w - 17, end;
+    int sx = x + NP, sw = w - 2 * NP;
     Box b;
     tile(c, t, x, y, w, h);
-    tile_header(c, t, x, y, w, "PRESSURE", "Last 1 h", t->muted);
+    tile_header_pad(c, t, x, y, w, NP, "PRESSURE", "1 h", NULL, t->muted);
     if (m->have_pressure)
         fmt_commas(buf, sizeof buf, m->pressure_hpa);
     else
         strcpy(buf, "--");
-    end = x + 17 + value_unit(c, t, x + 17, y + 56, FONT_VALUE, buf, FONT_UNIT, "hPa", 5) + 10;
+    value_unit(c, t, sx, y + 56, FONT_VALUE, buf, FONT_UNIT, "hPa", 5);
     switch (m->weather) {
-    case WEATHER_FALLING_FAST: trend_right(c, right, y + 56, end, t->text, ICON_DOWN, t->warn, "Falling fast"); break;
-    case WEATHER_FALLING: trend_right(c, right, y + 56, end, t->text, ICON_DOWN, t->muted, "Falling"); break;
-    case WEATHER_RISING: trend_right(c, right, y + 56, end, t->text, ICON_UP, t->muted, "Rising"); break;
-    case WEATHER_STEADY: trend_right(c, right, y + 56, end, t->text, ICON_FLAT, t->muted, "Weather steady"); break;
+    case WEATHER_FALLING_FAST: status_line(c, sx, y + 76, sw, t->text, ICON_DOWN, t->warn, "Falling fast", "Falling"); break;
+    case WEATHER_FALLING: status_line(c, sx, y + 76, sw, t->text, ICON_DOWN, t->muted, "Falling", NULL); break;
+    case WEATHER_RISING: status_line(c, sx, y + 76, sw, t->text, ICON_UP, t->muted, "Rising", NULL); break;
+    case WEATHER_STEADY: status_line(c, sx, y + 76, sw, t->text, ICON_FLAT, t->muted, "Weather steady", "Steady"); break;
     default:
         if (m->have_pressure)
-            trend_right(c, right, y + 56, end, t->muted, -1, 0, "No trend yet");
+            status_line(c, sx, y + 76, sw, t->muted, -1, 0, "No trend yet", "No trend");
     }
-    b.x = x + 17; b.w = w - 34; b.h = 44; b.y = y + h - 11 - b.h;
-    chart(c, t, &m->pressure, b, m->now_ms, 3600000u, 4.0f, t->cool, 0, 0);
+    narrow_chart_box(x, y, w, h, &b);
+    chart(c, t, &m->pressure, b, m->now_ms, 3600000u, 4.0f, t->cool, 0, 0, 0);
 }
 
 static void draw_elevation(const Canvas *c, const Theme *t, const DashModel *m, int x, int y, int w, int h)
@@ -391,21 +431,21 @@ static void draw_elevation(const Canvas *c, const Theme *t, const DashModel *m, 
         }
     }
     b.x = x + 17; b.w = w - 34; b.h = 44; b.y = y + h - 11 - b.h;
-    chart(c, t, &m->elevation, b, m->now_ms, 0, 40.0f, t->accent, 1, 1);
+    chart(c, t, &m->elevation, b, m->now_ms, 0, 40.0f, t->accent, 1, 1, 0);
 }
 
 static void draw_outside(const Canvas *c, const Theme *t, const DashModel *m, int x, int y, int w, int h)
 {
-    char buf[40];
-    int end;
+    char buf[40], brief[24];
+    int sx = x + NP;
     Box b;
     tile(c, t, x, y, w, h);
-    tile_header(c, t, x, y, w, "OUTSIDE", "Last 3 h", t->muted);
+    tile_header_pad(c, t, x, y, w, NP, "OUTSIDE", "3 h", NULL, t->muted);
     if (m->have_outside)
         snprintf(buf, sizeof buf, "%d", m->outside_c);
     else
         strcpy(buf, "--");
-    end = x + 17 + value_unit(c, t, x + 17, y + 56, FONT_VALUE, buf, FONT_UNIT, DEG "C", 5) + 10;
+    value_unit(c, t, sx, y + 56, FONT_VALUE, buf, FONT_UNIT, DEG "C", 5);
     if (m->have_temp_change) {
         int d = iround(m->temp_change), minutes = (int)(m->temp_span_s / 60u);
         char span[16];
@@ -413,14 +453,17 @@ static void draw_outside(const Canvas *c, const Theme *t, const DashModel *m, in
             snprintf(span, sizeof span, "%d min", minutes);
         else
             snprintf(span, sizeof span, "%d h", (minutes + 30) / 60);
-        if (d == 0)
-            snprintf(buf, sizeof buf, "Steady");
-        else
+        if (d == 0) {
+            strcpy(buf, "Steady");
+            strcpy(brief, "Steady");
+        } else {
             snprintf(buf, sizeof buf, "%s %d" DEG " in %s", d > 0 ? "Up" : "Down", d > 0 ? d : -d, span);
-        trend_right(c, x + w - 17, y + 56, end, t->text, -1, 0, buf);
+            snprintf(brief, sizeof brief, "%s %d" DEG, d > 0 ? "Up" : "Down", d > 0 ? d : -d);
+        }
+        status_line(c, sx, y + 76, w - 2 * NP, t->text, -1, 0, buf, brief);
     }
-    b.x = x + 17; b.w = w - 34; b.h = 44; b.y = y + h - 11 - b.h;
-    chart(c, t, &m->outside, b, m->now_ms, 10800000u, 4.0f, t->cool, 0, 0);
+    narrow_chart_box(x, y, w, h, &b);
+    chart(c, t, &m->outside, b, m->now_ms, 10800000u, 4.0f, t->cool, 0, 0, 0);
 }
 
 static void rose_point(int cx, int cy, double r, double screen_deg, int *x, int *y)
@@ -491,86 +534,294 @@ static void draw_heading(const Canvas *c, const Theme *t, const DashModel *m, in
 static void draw_battery(const Canvas *c, const Theme *t, const DashModel *m, int x, int y, int w, int h)
 {
     char buf[16];
-    const char *status = NULL;
-    int kind = -1, right = x + w - 17;
+    const char *status = NULL, *brief = NULL;
+    int kind = -1, sx = x + NP;
     unsigned icon_rgb = t->muted, text_rgb = t->text;
     Box b;
 
     tile(c, t, x, y, w, h);
-    tile_header(c, t, x, y, w, "BATTERY", NULL, t->muted);
+    tile_header_pad(c, t, x, y, w, NP, "BATTERY", "30 min", NULL, t->muted);
     switch (m->battery_state) {
     case BATT_CHARGING: status = "Charging"; kind = ICON_BOLT; icon_rgb = t->cool; break;
-    case BATT_NOT_CHARGING: status = "Not charging"; kind = ICON_BATTERY; text_rgb = t->muted; break;
+    case BATT_NOT_CHARGING: status = "Not charging"; brief = "Idle"; kind = ICON_BATTERY; text_rgb = t->muted; break;
     case BATT_LOW: status = "Low"; kind = ICON_WARN; icon_rgb = t->warn; break;
-    case BATT_HIGH: status = "Too high"; kind = ICON_WARN; icon_rgb = t->warn; break;
-    }
-    if (status) {
-        int sx = right - tw(c, FONT_LABEL, status);
-        text(c, sx, y + 24, FONT_LABEL, text_rgb, status);
-        icon(c, kind, sx - 18, y + 12, 14, icon_rgb);
+    case BATT_HIGH: status = "Too high"; brief = "High"; kind = ICON_WARN; icon_rgb = t->warn; break;
     }
     if (m->have_battery) {
         int dv = iround(m->battery_v * 10.0);
         snprintf(buf, sizeof buf, "%d.%d", dv / 10, dv % 10);
     } else
         strcpy(buf, "--");
-    value_unit(c, t, x + 17, y + 56, FONT_VALUE, buf, FONT_UNIT, "V", 5);
-    text_right(c, right, y + 56, FONT_SMALL, t->muted, "Last 30 min");
-    b.x = x + 17; b.w = w - 34; b.h = 40; b.y = y + h - 11 - b.h;
-    chart(c, t, &m->battery, b, m->now_ms, 1800000u, 0.8f, t->cool, 0, 0);
+    value_unit(c, t, sx, y + 56, FONT_VALUE, buf, FONT_UNIT, "V", 5);
+    if (status)
+        status_line(c, sx, y + 76, w - 2 * NP, text_rgb, kind, icon_rgb, status, brief);
+    narrow_chart_box(x, y, w, h, &b);
+    chart(c, t, &m->battery, b, m->now_ms, 1800000u, 0.8f, t->cool, 0, 0, 0);
 }
 
-static void draw_speed_tile(const Canvas *c, const Theme *t, int x, int y, int w, int h, const char *name,
-                            const char *note, unsigned note_rgb, int font, int baseline, int have, float kmh,
-                            const char *footer)
+/* Small "Avg 32" style figure, right-aligned. */
+static void speed_stat(const Canvas *c, const Theme *t, int right, int baseline, const char *name, int have, float kmh)
 {
     char buf[16];
-    tile(c, t, x, y, w, h);
-    tile_header(c, t, x, y, w, name, note, note_rgb);
+    int w;
     if (have)
         snprintf(buf, sizeof buf, "%d", iround(kmh));
     else
         strcpy(buf, "--");
-    value_unit(c, t, x + 17, y + baseline, font, buf, FONT_UNIT_BIG, "km/h", 8);
-    if (footer)
-        text(c, x + 17, y + h - 13, FONT_SMALL, t->muted, footer);
+    w = tw(c, FONT_STAT, buf);
+    text(c, right - w, baseline, FONT_STAT, t->text, buf);
+    text_right(c, right - w - 6, baseline, FONT_SMALL, t->muted, name);
+}
+
+/* Current speed large on the left, average (while moving) and top speed on the right, and the
+ * last 10 minutes as a graph. */
+static void draw_speed(const Canvas *c, const Theme *t, const DashModel *m, int x, int y, int w, int h)
+{
+    char buf[16];
+    int right = x + w - 17;
+    Box b;
+
+    tile(c, t, x, y, w, h);
+    tile_header(c, t, x, y, w, "SPEED", "Last 10 min", t->muted);
+    if (m->have_speed)
+        snprintf(buf, sizeof buf, "%d", iround(m->speed_kmh));
+    else
+        strcpy(buf, "--");
+    value_unit(c, t, x + 17, y + 80, FONT_SPEED, buf, FONT_UNIT, "km/h", 6);
+    speed_stat(c, t, right, y + 52, "Avg", m->have_avg, m->avg_kmh);
+    speed_stat(c, t, right, y + 80, "Top", m->have_top, m->top_kmh);
+    b.x = x + 17; b.w = w - 34; b.h = 30; b.y = y + h - 11 - b.h;
+    chart(c, t, &m->speed, b, m->now_ms, SPEED_WINDOW_MS, 20.0f, t->accent, 0, 0, 1);
+}
+
+/* ---------------------------------------------------------------- map */
+
+/* The map picture: column 3, rows 1 and 2, the whole tile inside its 1 px border (no title). */
+static void map_box(Box *b)
+{
+    b->x = COL_X[2] + 1;
+    b->y = ROW_Y[0] + 1;
+    b->w = COL_W[2] - 2;
+    b->h = ROW_Y[1] + ROW_H[1] - ROW_Y[0] - 2;
+}
+
+/* Paints the screen colour outside the rounded corners (radius r) of the box, so a picture drawn
+ * to the edges keeps the tile's rounded shape. */
+static void round_corners(const Canvas *c, unsigned bg, int x, int y, int w, int h, int r)
+{
+    static const double arc[5][2] = {{1, 0}, {0.924, 0.383}, {0.707, 0.707}, {0.383, 0.924}, {0, 1}};
+    int k, i;
+    for (k = 0; k < 4; k++) { /* top left, top right, bottom right, bottom left */
+        int sx = k == 0 || k == 3 ? -1 : 1, sy = k < 2 ? -1 : 1;
+        int cx = sx < 0 ? x + r : x + w - r, cy = sy < 0 ? y + r : y + h - r;
+        DPoint p[6];
+        p[0].x = sx < 0 ? x : x + w;
+        p[0].y = sy < 0 ? y : y + h;
+        for (i = 0; i < 5; i++) {
+            p[i + 1].x = cx + sx * iround(r * arc[i][0]);
+            p[i + 1].y = cy + sy * iround(r * arc[i][1]);
+        }
+        c->polygon(c->ctx, p, 6, bg);
+    }
+}
+
+static void zoom_button(int index, Box *z)
+{
+    Box b;
+    map_box(&b);
+    z->w = z->h = 44;
+    z->x = b.x + b.w - 6 - z->w;
+    z->y = b.y + 6 + index * 50;
+}
+
+static void centred(const Canvas *c, const Box *b, int baseline, int font, unsigned rgb, const char *s)
+{
+    int w = tw(c, font, s);
+    if (w <= b->w - 8)
+        text(c, b->x + (b->w - w) / 2, baseline, font, rgb, s);
+}
+
+/* The car: an arrow along the GPS course while moving, otherwise a dot; grey without GPS. */
+static void draw_marker(const Canvas *c, const Theme *t, const DashModel *m, int cx, int cy)
+{
+    static const double arrow[4][2] = {{0, -14}, {10, 11}, {0, 5}, {-10, 11}};
+    if (m->gps_ok && m->heading_src == SRC_GPS) {
+        double a = m->heading_deg * 3.14159265358979 / 180.0, s = sin(a), co = cos(a);
+        DPoint p[5];
+        int i;
+        for (i = 0; i < 4; i++) {
+            p[i].x = cx + iround(arrow[i][0] * co - arrow[i][1] * s);
+            p[i].y = cy + iround(arrow[i][0] * s + arrow[i][1] * co);
+        }
+        p[4] = p[0];
+        c->polyline(c->ctx, p, 5, 4, t->bg); /* dark outline so it stands out on any map colour */
+        c->polygon(c->ctx, p, 4, t->accent);
+    } else {
+        c->circle(c->ctx, cx, cy, 7, m->gps_ok ? t->accent : t->muted, t->bg, 3);
+    }
+}
+
+/* Scale bar with a round distance of at most 64 px, bottom left. */
+static void draw_scale(const Canvas *c, const Theme *t, const DashModel *m, const Box *b)
+{
+    static const int nice[] = {10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000};
+    double mpp = map_metres_per_pixel(m->lat, m->map_zoom);
+    char buf[16];
+    DPoint p[4];
+    int i, len = 0, metres = 0, bw, bx, by;
+
+    for (i = 0; i < (int)(sizeof nice / sizeof nice[0]); i++) {
+        int px = mpp > 0 ? iround(nice[i] / mpp) : 0;
+        if (px > 64)
+            break;
+        metres = nice[i];
+        len = px;
+    }
+    if (metres == 0 || len < 8)
+        return;
+    if (metres >= 1000)
+        snprintf(buf, sizeof buf, "%d km", metres / 1000);
+    else
+        snprintf(buf, sizeof buf, "%d m", metres);
+    bw = (len > tw(c, FONT_SMALL, buf) ? len : tw(c, FONT_SMALL, buf)) + 14;
+    bx = b->x + 4;
+    by = b->y + b->h - 4 - 27;
+    c->round_rect(c->ctx, bx, by, bw, 27, 4, t->panel, t->panel);
+    text(c, bx + 7, by + 13, FONT_SMALL, t->text, buf);
+    p[0].x = bx + 7; p[0].y = by + 16;
+    p[1].x = bx + 7; p[1].y = by + 21;
+    p[2].x = bx + 7 + len; p[2].y = by + 21;
+    p[3].x = bx + 7 + len; p[3].y = by + 16;
+    c->polyline(c->ctx, p, 4, 2, t->text);
+}
+
+static void draw_zoom_buttons(const Canvas *c, const Theme *t, const DashModel *m)
+{
+    int i;
+    for (i = 0; i < 2; i++) {
+        Box z;
+        int enabled = i == 0 ? m->map_zoom < m->map_max_zoom : m->map_zoom > m->map_min_zoom;
+        unsigned rgb = enabled ? t->text : t->line;
+        int cx, cy;
+        zoom_button(i, &z);
+        cx = z.x + z.w / 2;
+        cy = z.y + z.h / 2;
+        c->round_rect(c->ctx, z.x, z.y, z.w, z.h, 8, t->panel, t->line);
+        line(c, cx - 8, cy, cx + 8, cy, 3, rgb);
+        if (i == 0)
+            line(c, cx, cy - 8, cx, cy + 8, 3, rgb);
+    }
+}
+
+static void draw_map(const Canvas *c, const Theme *t, const DashModel *m, int x, int y, int w, int h)
+{
+    /* credits the map's licences ask for: OpenMapTiles (CC-BY 4.0), OpenStreetMap data (ODbL) */
+    static const char *const credit = "\xC2\xA9 OpenMapTiles \xC2\xA9 OpenStreetMap";
+    int files = c->map != NULL && m->map_max_zoom >= 0;
+    Box b;
+
+    tile(c, t, x, y, w, h);
+    map_box(&b);
+    if (!files || !m->have_position) { /* messages on the plain tile */
+        if (!files) {
+            centred(c, &b, b.y + b.h / 2 - 4, FONT_HEADER, t->text, "No map files");
+            centred(c, &b, b.y + b.h / 2 + 16, FONT_SMALL, t->muted, "Copy the Map folder to the SD card");
+        } else {
+            centred(c, &b, b.y + b.h / 2 + 5, FONT_HEADER, t->muted, "Waiting for GPS");
+        }
+    } else {
+        double px, py;
+        int cw;
+        map_world_pixel(m->lat, m->lon, m->map_zoom, &px, &py);
+        if (c->map(c->ctx, b.x, b.y, b.w, b.h, m->map_zoom, px, py, m->night) != MAP_SHOWN) {
+            const char *msg = "No map for this area";
+            int mw = tw(c, FONT_HEADER, msg);
+            c->round_rect(c->ctx, b.x + (b.w - mw) / 2 - 8, b.y + b.h / 2 + 26, mw + 16, 26, 4, t->panel, t->line);
+            centred(c, &b, b.y + b.h / 2 + 44, FONT_HEADER, t->text, msg);
+        }
+        draw_marker(c, t, m, b.x + b.w / 2, b.y + b.h / 2);
+        draw_scale(c, t, m, &b);
+        cw = tw(c, FONT_SMALL, credit);
+        c->round_rect(c->ctx, b.x + b.w - 4 - cw - 10, b.y + b.h - 4 - 20, cw + 10, 20, 4, t->panel, t->panel);
+        text(c, b.x + b.w - 4 - cw - 5, b.y + b.h - 4 - 6, FONT_SMALL, t->muted, credit);
+        draw_zoom_buttons(c, t, m);
+        round_corners(c, t->bg, x, y, w, h, 10);
+        c->round_rect(c->ctx, x, y, w, h, 10, NO_FILL, t->line);
+    }
+}
+
+int render_map_hit(int x, int y)
+{
+    int i;
+    for (i = 0; i < 2; i++) {
+        Box z;
+        zoom_button(i, &z);
+        if (x >= z.x && x < z.x + z.w && y >= z.y && y < z.y + z.h)
+            return i == 0 ? MAPHIT_ZOOM_IN : MAPHIT_ZOOM_OUT;
+    }
+    return MAPHIT_NONE;
 }
 
 void render_dashboard(const Canvas *c, const DashModel *m)
 {
     const Theme *t = m->night ? &g_night : &g_day;
-    char since[24] = "";
 
-    if (m->have_since)
-        snprintf(since, sizeof since, "Since %02d:%02d", m->since_hour, m->since_minute);
     c->fill_rect(c->ctx, 0, 0, SCREEN_W, SCREEN_H, t->bg);
     draw_header(c, t, m);
-    draw_pressure(c, t, m, COL_X[0], ROW_Y[0], COL_W[0], ROW_H[0]);
-    draw_elevation(c, t, m, COL_X[0], ROW_Y[1], COL_W[0], ROW_H[1]);
-    draw_outside(c, t, m, COL_X[0], ROW_Y[2], COL_W[0], ROW_H[2]);
+    draw_outside(c, t, m, COL_X[0], ROW_Y[0], COL_W[0], ROW_H[0]);
+    draw_pressure(c, t, m, COL_X[0], ROW_Y[1], COL_W[0], ROW_H[1]);
+    draw_battery(c, t, m, COL_X[0], ROW_Y[2], COL_W[0], ROW_H[2]);
     draw_heading(c, t, m, COL_X[1], ROW_Y[0], COL_W[1], ROW_Y[1] + ROW_H[1] - ROW_Y[0]);
-    draw_battery(c, t, m, COL_X[1], ROW_Y[2], COL_W[1], ROW_H[2]);
-    draw_speed_tile(c, t, COL_X[2], ROW_Y[0], COL_W[2], ROW_H[0], "SPEED", m->gps_ok ? "GPS" : "No GPS signal",
-                    m->gps_ok ? t->muted : t->text, FONT_SPEED, 103, m->have_speed, m->speed_kmh, NULL);
-    draw_speed_tile(c, t, COL_X[2], ROW_Y[1], COL_W[2], ROW_H[1], "AVERAGE SPEED", "While moving", t->muted,
-                    FONT_STAT, 92, m->have_avg, m->avg_kmh, since[0] ? since : NULL);
-    draw_speed_tile(c, t, COL_X[2], ROW_Y[2], COL_W[2], ROW_H[2], "TOP SPEED", since, t->muted, FONT_STAT, 97,
-                    m->have_top, m->top_kmh, NULL);
+    draw_speed(c, t, m, COL_X[1], ROW_Y[2], COL_W[1], ROW_H[2]);
+    draw_map(c, t, m, COL_X[2], ROW_Y[0], COL_W[2], ROW_Y[1] + ROW_H[1] - ROW_Y[0]);
+    draw_elevation(c, t, m, COL_X[2], ROW_Y[2], COL_W[2], ROW_H[2]);
 }
 
 /* ---------------------------------------------------------------- maintenance menu */
 
 #define MENU_X 190
-#define MENU_Y 84
+#define MENU_Y 48
 #define MENU_W 420
-#define MENU_H 312
+#define MENU_H 384
+#define TZ_Y (MENU_Y + 84)           /* time-zone row: [-] value [+], 56 px tall */
+#define TZ_PLUS_X (MENU_X + MENU_W - 20 - 56)
+#define TZ_MINUS_X (TZ_PLUS_X - 110 - 56)
 
 static void menu_button(int index, Box *b)
 {
     b->x = MENU_X + 20;
-    b->y = MENU_Y + 92 + index * 68;
+    b->y = MENU_Y + 172 + index * 68;
     b->w = MENU_W - 40;
     b->h = 56;
+}
+
+static void tz_text(char *buf, int size, int offset_min)
+{
+    int a = offset_min < 0 ? -offset_min : offset_min;
+    if (offset_min == 0)
+        snprintf(buf, size, "UTC");
+    else if (a % 60)
+        snprintf(buf, size, "UTC%c%d:%02d", offset_min < 0 ? '-' : '+', a / 60, a % 60);
+    else
+        snprintf(buf, size, "UTC%c%d", offset_min < 0 ? '-' : '+', a / 60);
+}
+
+static void draw_tz_row(const Canvas *c, const Theme *t, const DashModel *m)
+{
+    char buf[24];
+    int mid = TZ_Y + 28;
+    const char *source = m->clock_src == SRC_GPS ? "Clock from GPS time"
+                       : m->clock_src == SRC_CAR ? "Clock from the head unit" : "No clock yet: waiting for GPS";
+
+    text(c, MENU_X + 20, mid + 6, FONT_MENU, t->text, "Time zone");
+    c->round_rect(c->ctx, TZ_MINUS_X, TZ_Y, 56, 56, 10, t->button, t->line);
+    c->round_rect(c->ctx, TZ_PLUS_X, TZ_Y, 56, 56, 10, t->button, t->line);
+    line(c, TZ_MINUS_X + 18, mid, TZ_MINUS_X + 38, mid, 3, t->text);
+    line(c, TZ_PLUS_X + 18, mid, TZ_PLUS_X + 38, mid, 3, t->text);
+    line(c, TZ_PLUS_X + 28, mid - 10, TZ_PLUS_X + 28, mid + 10, 3, t->text);
+    tz_text(buf, sizeof buf, m->utc_offset_min);
+    text(c, TZ_MINUS_X + 56 + (110 - tw(c, FONT_MENU, buf)) / 2, mid + 7, FONT_MENU, t->text, buf);
+    text(c, MENU_X + 20, TZ_Y + 76, FONT_SMALL, t->muted, source);
 }
 
 static int menu_items(int has_file_manager, int *items)
@@ -595,6 +846,7 @@ void render_menu(const Canvas *c, const DashModel *m, int has_file_manager, cons
     text(c, MENU_X + 20, MENU_Y + 40, FONT_MENU, t->text, "Dashboard menu");
     snprintf(buf, sizeof buf, "Montero dashboard %s", version);
     text(c, MENU_X + 20, MENU_Y + 64, FONT_SMALL, t->muted, buf);
+    draw_tz_row(c, t, m);
     for (i = 0; i < n; i++) {
         int back = items[i] == MENU_BACK;
         const char *name = names[items[i]];
@@ -608,6 +860,12 @@ int render_menu_hit(int x, int y, int has_file_manager)
 {
     int items[3], n = menu_items(has_file_manager, items), i;
     Box b;
+    if (y >= TZ_Y && y < TZ_Y + 56) {
+        if (x >= TZ_MINUS_X && x < TZ_MINUS_X + 56)
+            return MENU_TZ_MINUS;
+        if (x >= TZ_PLUS_X && x < TZ_PLUS_X + 56)
+            return MENU_TZ_PLUS;
+    }
     for (i = 0; i < n; i++) {
         menu_button(i, &b);
         if (x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + b.h)

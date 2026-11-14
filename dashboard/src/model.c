@@ -56,6 +56,9 @@ void dash_init(DashModel *m)
     series_init(&m->battery, 120);    /* 120 x 15 s = 30 min */
     series_init(&m->elevation, ELEVATION_POINTS);
     series_init(&m->sealevel, 120);   /* 120 x 90 s = 3 h */
+    series_init(&m->speed, 120);      /* 120 x 5 s = 10 min */
+    m->map_zoom = MAP_DEFAULT_ZOOM;
+    m->map_max_zoom = -1;
 }
 
 /* First sample at once, then one per interval. */
@@ -77,13 +80,15 @@ static float median3(const float *v)
     return b;
 }
 
-static void update_speed(DashModel *m, const DashInputs *in, double dt)
+static void update_speed(DashModel *m, const DashInputs *in, double dt, unsigned now)
 {
     float speed = (float)in->gps.speed_dkmh / 10.0f;
 
     if (!m->gps_ok) {
         m->have_speed = 0;
         m->speed_count = 0;
+        m->speed_sum = 0; /* the graph skips the time without GPS */
+        m->speed_n = 0;
         return;
     }
     m->have_speed = 1;
@@ -100,6 +105,14 @@ static void update_speed(DashModel *m, const DashInputs *in, double dt)
         m->moving_m += metres;
         m->moving_s += dt;
         m->elev_dist_m += metres;
+    }
+    m->speed_sum += m->speed_kmh;
+    m->speed_n++;
+    if (m->speed.count == 0 || now - m->speed_ms >= SPEED_EVERY_MS) {
+        series_push(&m->speed, m->speed_sum / (float)m->speed_n, now);
+        m->speed_ms = now;
+        m->speed_sum = 0;
+        m->speed_n = 0;
     }
 }
 
@@ -279,26 +292,72 @@ static int round_minutes(double minutes)
     return v < 0 ? v + 1440 : v;
 }
 
-static void update_sun(DashModel *m, const DashInputs *in, unsigned now)
+/* Local time. GPS time (UTC, exact) once a fix has been seen, kept running with the tick count, so
+ * the head unit's clock (it resets to 2012 on this car) is used only when it looks set. Time zone:
+ * the menu choice, else the unit's clock against GPS time when that clock looks set, else the
+ * unit's time-zone setting. */
+static void update_clock(DashModel *m, const DashInputs *in, unsigned now)
+{
+    double unit_s = 0, utc_now = 0, local;
+    long days;
+    int y, mo, d, guard;
+
+    if (m->gps_ok && in->gps.have_time && in->gps.have_date) {
+        days = sun_days_from_civil(in->gps.year, in->gps.month, in->gps.day);
+        y = in->gps.year;
+        for (guard = 0; y < 2020 && guard < 4; guard++) { /* receivers from before a 1024-week rollover */
+            days += 7168;
+            sun_civil_from_days(days, &y, &mo, &d);
+        }
+        m->utc_base = (double)days * 86400.0 + in->gps.utc_seconds;
+        m->utc_base_ms = now;
+        m->have_utc = 1;
+    }
+    if (m->have_utc)
+        utc_now = m->utc_base + (double)(now - m->utc_base_ms) / 1000.0;
+    if (in->clock_valid)
+        unit_s = (double)sun_days_from_civil(in->year, in->month, in->day) * 86400.0 + in->hour * 3600.0 +
+                 in->minute * 60.0 + in->second;
+
+    if (in->tz_override)
+        m->utc_offset_min = in->tz_override_min;
+    else if (in->clock_valid && m->have_utc && fabs(unit_s - utc_now) <= 14 * 3600.0)
+        m->utc_offset_min = (int)floor((unit_s - utc_now) / 900.0 + 0.5) * 15;
+    else
+        m->utc_offset_min = in->system_utc_offset_min;
+
+    if (m->have_utc) {
+        local = utc_now + m->utc_offset_min * 60.0;
+        m->clock_src = SRC_GPS;
+    } else if (in->clock_valid) {
+        local = unit_s;
+        m->clock_src = SRC_CAR;
+    } else {
+        m->clock_valid = 0;
+        m->clock_src = SRC_NONE;
+        return;
+    }
+    days = (long)floor(local / 86400.0);
+    sun_civil_from_days(days, &m->year, &m->month, &m->day);
+    local -= (double)days * 86400.0;
+    m->hour = (int)(local / 3600.0);
+    m->minute = (int)(local / 60.0) % 60;
+    m->second = (int)local % 60;
+    m->clock_valid = 1;
+}
+
+static void update_sun(DashModel *m, unsigned now)
 {
     double rise, set, now_min;
-    int offset = in->system_utc_offset_min, event, y, mo, d;
+    int offset = m->utc_offset_min, event, y, mo, d;
 
-    if (!m->have_position || !in->clock_valid || (m->sun_valid && now - m->sun_ms < 10000))
+    if (!m->have_position || !m->clock_valid || (m->sun_valid && now - m->sun_ms < 10000))
         return;
     m->sun_ms = now;
     m->sun_valid = 1;
-    if (in->gps_fresh && in->gps.have_time) { /* the unit's clock against GPS time, to 15 minutes */
-        long diff = (long)in->hour * 3600 + in->minute * 60 + in->second - in->gps.utc_seconds;
-        if (diff > 50400)
-            diff -= 86400;
-        if (diff <= -43200)
-            diff += 86400;
-        offset = (int)floor((double)diff / 900.0 + 0.5) * 15;
-    }
-    now_min = in->hour * 60 + in->minute + in->second / 60.0;
+    now_min = m->hour * 60 + m->minute + m->second / 60.0;
     m->sun_event = SUN_NONE;
-    if (!sun_times(in->year, in->month, in->day, m->lat, m->lon, &rise, &set))
+    if (!sun_times(m->year, m->month, m->day, m->lat, m->lon, &rise, &set))
         return;
     rise += offset;
     set += offset;
@@ -310,7 +369,7 @@ static void update_sun(DashModel *m, const DashInputs *in, unsigned now)
         m->sun_event = SUN_SUNSET;
         m->sun_minutes_left = (int)floor(set - now_min + 0.5);
     } else { /* after sunset: tomorrow's sunrise */
-        sun_civil_from_days(sun_days_from_civil(in->year, in->month, in->day) + 1, &y, &mo, &d);
+        sun_civil_from_days(sun_days_from_civil(m->year, m->month, m->day) + 1, &y, &mo, &d);
         if (!sun_times(y, mo, d, m->lat, m->lon, &rise, &set))
             return;
         event = round_minutes(rise + offset);
@@ -328,15 +387,17 @@ void dash_update(DashModel *m, const DashInputs *in)
     if (dt > 5.0)
         dt = 0.0; /* a long pause (window hidden, clock jump): do not count it as driving */
     m->now_ms = now;
-    m->clock_valid = in->clock_valid;
-    m->hour = in->hour;
-    m->minute = in->minute;
-    if (in->clock_valid && !m->have_since) {
-        m->have_since = 1;
-        m->since_hour = in->hour;
-        m->since_minute = in->minute;
-    }
+    if (!m->started)
+        m->start_ms = now;
     m->gps_ok = in->gps_fresh && in->gps.have_rmc && in->gps.valid;
+    update_clock(m, in, now);
+    if (m->clock_valid && !m->have_since) { /* the start time, even when the clock came later */
+        long s = (long)m->hour * 3600 + m->minute * 60 + m->second - (long)((now - m->start_ms) / 1000u);
+        s = (s % 86400 + 86400) % 86400;
+        m->have_since = 1;
+        m->since_hour = (int)(s / 3600);
+        m->since_minute = (int)(s / 60 % 60);
+    }
     m->satellites = in->gps_fresh ? in->gps.satellites : 0;
     m->car_ok = in->car_fresh;
     m->night = in->lights_on;
@@ -346,7 +407,7 @@ void dash_update(DashModel *m, const DashInputs *in)
         m->lon = in->gps.lon_e6 / 1e6;
     }
 
-    update_speed(m, in, dt);
+    update_speed(m, in, dt, now);
     m->have_avg = m->moving_s >= 60.0;
     if (m->have_avg)
         m->avg_kmh = (float)(m->moving_m / m->moving_s * 3.6);
@@ -355,7 +416,7 @@ void dash_update(DashModel *m, const DashInputs *in)
     update_elevation(m, in, now);
     update_climb(m, now);
     update_car(m, in, now);
-    update_sun(m, in, now);
+    update_sun(m, now);
 
     m->last_ms = now;
     m->started = 1;

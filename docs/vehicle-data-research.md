@@ -435,10 +435,11 @@ USB serial adapter would need a Windows CE driver added. Two built-in routes avo
 
 ## Dashboard
 
-`dashboard/` (version 0.1.0, **built, not run on the car yet**) is the one-page dashboard from the
-design canvas (https://claude.ai/artifact/9WDQyDaPa6RprDPPk3ST8x, private). It is a complete SD
-`Navigation` folder: `Navigation.exe`, `fonts/` (Barlow), `README.txt`, and `TotalCommander/cecmd.exe`
-when Total Commander was built.
+`dashboard/` (version 0.2.0, **built, not run on the car yet**; 0.1.0 ran, see "First run" below) is
+the one-page dashboard from the design canvas (https://claude.ai/artifact/9WDQyDaPa6RprDPPk3ST8x,
+private). It is a complete SD `Navigation` folder: `Navigation.exe`, `fonts/` (Barlow), `README.txt`,
+and `TotalCommander/cecmd.exe` when Total Commander was built. The map's files go in a separate
+`Map` folder at the SD card root (see "Map" below).
 
 | Tile | Source | Rule |
 |---|---|---|
@@ -447,8 +448,9 @@ when Total Commander was built.
 | Outside, graph of 3 h | CarInfo `0x31` | sampled every 90 s; change shown after 30 min |
 | Heading | GPS course above 6 km/h (back below 4 km/h) | otherwise the car's 8-point compass (`0x11`) |
 | Battery, graph of 30 min | CarInfo `0x40` | 13.2 V and up charging, 12.2 to 13.2 V not charging, below 12.2 V low, 14.8 V and up too high |
-| Speed, average, top | GPS | average counts only above 3 km/h; top speed is the highest median of three readings; since the dashboard started, not saved |
-| Header | unit clock, GPS, bus | sunset or sunrise from the last GPS position and date (time zone from the unit's clock against GPS time, to 15 minutes); "Headlights on" and night colours from `0x52A` index 9 or `0x33` bit `0x04` |
+| Map (wide column 3, rows 1 and 2) | GPS position, `\SD\Map\*.pack` | north-up offline map filling the whole tile (no title or label; rounded corners painted over), centred on the last GPS position; arrow along the GPS course while the heading comes from GPS, otherwise a dot (grey without a fix); +/- zoom through the levels the files hold (start at 14); half brightness at night |
+| Speed panel (wide column 2, row 3) | GPS | current speed large, average (counts only above 3 km/h) and top speed (highest median of three readings) small on the right, both since the dashboard started and not saved; graph of the last 10 min, a point every 5 s (mean of that time), none while GPS has no fix |
+| Header | GPS time, bus | clock: GPS UTC time and date (1024-week rollover corrected), kept running on the tick count when the signal drops; the unit's clock only when its year is 2020 or later. Time zone: the menu choice (`dashboard-settings.txt`), else UTC+8 (`DEFAULT_UTC_OFFSET_MIN` in `dash.c`, the user's choice). The model can also derive it from the unit's clock or time-zone setting, but `dash.c` always passes a zone because both are unreliable on this unit. Sunset or sunrise from the last GPS position. "Headlights on" and night colours from `0x52A` index 9 or `0x33` bit `0x04` |
 
 Car data counts as current for 30 s after the last CarInfo reply, GPS for 3 s after the last RMC
 sentence. The bus client is the probe's: it joins as `TerminalA` (waits while another `TerminalA`
@@ -457,9 +459,57 @@ window exists, for example the probe), reads the ring backlog, sends `81 01 01` 
 file manager, close, back. `dashboard-log.txt` next to the exe records start-up, which drawing
 functions and fonts loaded, bus and GPS status, and a summary every 10 minutes (no position).
 
-Open questions for the first run: whether `AUTORUN=1` starts it at boot and whether `Main.exe`
-then shows or hides it; whether the Barlow fonts load (otherwise Tahoma); how long the GDI repaint
-takes once a second.
+First run (dashboard 0.1.0, `dashboard-log.txt`, **Seen**): `Ellipse`, `RoundRect`, `Polygon`,
+`Polyline` and `GetTextFaceW` all exist in this unit's COREDLL; the three Barlow fonts loaded with
+`AddFontResourceW`; COM1 opened; the bus joined as `TerminalA` with 85 backlog records and the
+first CarInfo reply within a second, and all requests posted; night colours switched with the
+headlights through `0x33`. The unit's clock read **2012-06-08** (15:04 while it was night), as on
+probe run 3 a day earlier (the probe log's file date), so the clock resets when the unit loses
+power and cannot be used for the time or the date; dashboard 0.2 takes both from GPS.
+
+Still open: whether `AUTORUN=1` starts it at boot and whether `Main.exe` then shows or hides it;
+how long the GDI repaint takes once a second; whether the unit's time-zone setting is right.
+
+### Map (dashboard 0.2, **built and tested on the Mac only**)
+
+The user wants to see where the car is, with no routing (the factory GenieTek `Navigator.exe` has a
+Philippine map from 2018-01-12 that can no longer be updated). The map is made on the Mac from
+OpenStreetMap data with `tools/map/` and stored as **Montero tile packs** (`*.pack`, format in
+`tools/map/mtpack.py`): one zoom level and one rectangle of 256 x 256 PNG tiles per file
+(OpenStreetMap tile numbering, Web Mercator), an index of offset and length per tile, identical tiles
+stored once, each file below 2,000,000,000 bytes for FAT32 and 31-bit file offsets. The dashboard
+opens every `*.pack` in the `Map` folder beside its own folder (`\SD\Map\`) read-only, and
+`dashboard/src/map.c` reads the index entry and tile bytes on demand, decodes PNG with stb_image
+(`dashboard/src/pngdec.c`, PNG only), keeps 12 decoded tiles (RGB565, 128 KB each) and composes the
+299 x 271 view (the whole tile inside its border, no title) into a 16-bit DIB section that is
+copied onto the back buffer. `CreateDIBSection` is
+looked up at run time like the other optional GDI functions. Tests on the Mac:
+`tests/test_map_reader.py` (decoding, pixel placement, empty, corrupt and missing tiles, night,
+cache, bottom-up bitmaps) and SVG previews with the composed map embedded.
+
+Making the map (`tools/map/build_map.sh`): planetiler 0.10.2 turns the Geofabrik Philippines
+extract (plus OpenStreetMap water polygons, Natural Earth and lake centerlines, about 2 GB of
+downloads) into OpenMapTiles vector tiles for the Luzon box `119.4,12.4,124.5,18.8` (about 5 min;
+reading the whole extract dominates, so a smaller box hardly saves time). tileserver-gl 5.7.0
+draws 8-bit palette PNG tiles from them with our own dark style (`tools/map/style/`, written by
+`make_style.py`): roads by class, tracks dashed ochre, paths dotted, water blue, peaks with heights;
+unnamed tracks and paths from zoom 14, buildings only at 15. `build_map.py` fetches the tiles
+from that local server only, skips open sea below sea parents from zoom 11 (a one-colour tile is
+reused; tiny islets far from a coast could be missed), caches rendered tiles by a fingerprint of
+style and data, and writes one pack per zoom level (column bands when one would pass the size
+limit). Test area east of Manila (zoom 8 to 15, 234 tiles): about 65 tiles/s, 7.5 KB per tile;
+dense Manila about 22 tiles/s and 32 KB per tile. The first Luzon build (2026-11-15, data up to
+2026-11-13) took 12 min with the vector tiles already made: zoom 8 to 14 in 7 packs, 244 MB; zoom
+15 in one pack of 416 MB (281,790 tiles, 102,729 rendered, 178,833 by the sea shortcut, about
+219 rendered tiles/s); 632 MB in all. The licences ask for "© OpenMapTiles
+© OpenStreetMap contributors" to be visible; the map shows "© OpenMapTiles © OpenStreetMap".
+No contour lines or hill shading yet (the OpenMapTiles schema has no elevation).
+
+The log gets `[map] N map files, zoom A to B` at start and, every 10 minutes, the zoom, tiles
+decoded, failures, read errors and the slowest map draw in ms. Open questions for the first run:
+whether `CreateDIBSection` with `BI_BITFIELDS` 565 works on this unit, how long a tile takes to
+decode from the SD card (the first draw after a zoom change decodes up to four), and whether the
+map is readable in sunlight.
 
 ## The probe
 

@@ -1,0 +1,33 @@
+{
+  "options": {
+    "paths": {
+      "root": "/data",
+      "styles": "styles",
+      "mbtiles": "tiles",
+      "fonts": "/usr/src/app/node_modules/tileserver-gl-styles/fonts"
+    },
+    "formatOptions": {
+      "png": {
+        "palette": true,
+        "colors": 128,
+        "dither": 0,
+        "compressionLevel": 9,
+        "effort": 10
+      }
+    },
+    "maxScaleFactor": 1,
+    "minRendererPoolSizes": [10],
+    "maxRendererPoolSizes": [10],
+    "serveStaticMaps": false
+  },
+  "styles": {
+    "montero-dark": {
+      "style": "montero-dark.json"
+    }
+  },
+  "data": {
+    "openmaptiles": {
+      "mbtiles": "openmaptiles.mbtiles"
+    }
+  }
+}

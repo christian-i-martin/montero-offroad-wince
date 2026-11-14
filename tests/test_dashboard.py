@@ -15,6 +15,7 @@ import xml.etree.ElementTree as ET
 ROOT = Path(__file__).resolve().parents[1]
 COMPILER = shutil.which("cc") or shutil.which("gcc") or shutil.which("clang")
 SOURCES = ["dashboard/src/model.c", "dashboard/src/render.c", "dashboard/src/sun.c",
+           "dashboard/src/map.c", "dashboard/src/pngdec.c",
            "probe/src/nmea.c", "probe/src/carinfo.c"]
 SCENES = ["driving.svg", "parked-night.svg", "no-gps.svg", "startup.svg", "menu.svg"]
 
