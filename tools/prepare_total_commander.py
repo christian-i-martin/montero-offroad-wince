@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Build an SD-card overlay on a computer; never execute the Windows CE binaries."""
+"""Build a complete SD Navigation replacement that launches Total Commander directly."""
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 import shutil
 import struct
 import sys
@@ -16,122 +16,150 @@ from urllib.request import Request, urlopen
 ROOT = Path(__file__).resolve().parents[1]
 UPSTREAM = "typlo-gh/Ford-WINCE-Autokit"
 REVISION = "986cf5464c61eae40d101985027fa24b2e6fde79"
-# Path: (exact byte length, Git blob SHA-1), pinned to the reference commit.
-DEPENDENCIES = {
-    "LaunchTotalCommander/Arthur.exe": (8192, "87277a137a845cbcc5572ed1308aaaa3ecdd1170"),
-    "LaunchTotalCommander/MortScript.exe": (94720, "9d1993bdb9ded9fb5e60e6397cea2e285a2eb6bd"),
-    "TC/cecmd.exe": (337920, "1925f097d2e2ef09516154b1d9638d38cc97a8c9"),
-}
+URL = f"https://raw.githubusercontent.com/{UPSTREAM}/{REVISION}/TC/cecmd.exe"
+EXPECTED_SIZE = 337920
+EXPECTED_BLOB = "1925f097d2e2ef09516154b1d9638d38cc97a8c9"
+AUTOKIT_BLOB = "0724152188983e82768750dd9d5a48f652d04ac8"
+MORTSCRIPT_BLOB = "87277a137a845cbcc5572ed1308aaaa3ecdd1170"
+ENTRYPOINT = Path("Navigation/Navigation.exe")
+INSTALL_TEXT = """DIRECT TOTAL COMMANDER REPLACEMENT
+
+This is a COMPLETE Navigation folder, not the earlier MortScript overlay.
+1. Save the current SD Navigation folder on your computer.
+2. Remove the old Navigation folder from the SD card.
+3. Copy this package's Navigation folder to the card ROOT.
+   Correct: Navigation/Navigation.exe
+   Incorrect: Navigation/Navigation/Navigation.exe
+4. Eject safely, restart the head unit normally, and open Navigation while parked.
+Expected: Total Commander file browser directly. No selection menu or CarPlay.
+Do not copy the repository's original Navigation folder back onto the card.
+
+Navigation.exe is the reference cecmd.exe with a different filename, not a wrapper.
+No AutoKit, MortScript, scripts, or AutoKit DLLs are included in the new folder.
+LaunchTotalCommander/LaunchTotalCommander.exe is an optional direct entry point.
+Do not modify Navigator, GenieTek, internal flash, registry, or vehicle ports.
+This is not a firmware/map update. Head-unit runtime compatibility is untested.
+Total Commander can modify files and save settings: browse only at first.
+
+If CarPlay still opens, run the preparation script with --verify-sd <card-root>.
+After successful verification and a full head-unit restart, another launch path
+or an internal copy may be in use; investigate rather than replacing other files.
+"""
+NOTICE = f"""Total Commander/CE by Christian Ghisler / C. Ghisler & Co.
+Copyright remains with its author. This is third-party freeware.
+Publisher information and terms: https://www.ghisler.com/cecmd.htm
+Reference binary: https://github.com/{UPSTREAM}/blob/{REVISION}/TC/cecmd.exe
+Git blob SHA-1: {EXPECTED_BLOB}
+Length: {EXPECTED_SIZE} bytes
+The binary is not patched; Navigation.exe is a renamed copy of cecmd.exe.
+Hash verification establishes equality to the reference, not a security audit
+or runtime compatibility. No optional plugins, maps, or fonts are included.
+"""
 
 
 def blob_sha(data: bytes) -> str:
     return hashlib.sha1(b"blob " + str(len(data)).encode("ascii") + b"\0" + data).hexdigest()
 
 
+def is_commander(data: bytes) -> bool:
+    return len(data) == EXPECTED_SIZE and blob_sha(data) == EXPECTED_BLOB
+
+
 def ce_machine(data: bytes) -> int:
-    """Check PE32 / Windows CE GUI headers, not OS/API compatibility."""
+    """Validate PE32/CE headers, not compatibility with the physical head unit."""
     if len(data) < 64 or data[:2] != b"MZ":
         raise ValueError("Not a PE executable")
     offset = struct.unpack_from("<I", data, 60)[0]
     if offset + 94 > len(data) or data[offset:offset + 4] != b"PE\0\0":
         raise ValueError("Invalid PE header")
-    optional = offset + 24
-    if struct.unpack_from("<H", data, optional)[0] != 0x10B:
+    if struct.unpack_from("<H", data, offset + 24)[0] != 0x10B:
         raise ValueError("Expected a PE32 executable")
-    if struct.unpack_from("<H", data, optional + 68)[0] != 9:
+    if struct.unpack_from("<H", data, offset + 92)[0] != 9:
         raise ValueError("Expected the Windows CE GUI subsystem")
     return struct.unpack_from("<H", data, offset + 4)[0]
 
 
 def family(machine: int) -> int:
-    # Legacy CE ARM and Thumb binaries can belong to the same CPU family.
     return 0x1C0 if machine in (0x1C0, 0x1C2) else machine
 
 
-def entry_path(value: str) -> Path:
-    path = PurePosixPath(value)
-    if (not value or "\\" in value or path.is_absolute()
-            or any(p in ("", ".", "..") or ":" in p for p in value.split("/"))
-            or path.suffix.lower() != ".exe"):
-        raise ValueError("Entry point must be a relative .exe path using /, without ..")
-    if (path.parts[0].lower() == "launchtotalcommander"
-            or path.name.lower() in {"originalapp.exe", "mortscript.exe", "cecmd.exe"}):
-        raise ValueError("Entry point conflicts with a generated launcher file")
-    return Path(*path.parts)
+def get_commander(local_file: Path | None = None) -> bytes:
+    if local_file is None:
+        request = Request(URL, headers={"User-Agent": "montero-direct-launcher/2.0"})
+        with urlopen(request, timeout=30) as response:
+            data = response.read(EXPECTED_SIZE + 1)
+    else:
+        with local_file.open("rb") as stream:
+            data = stream.read(EXPECTED_SIZE + 1)
+    if not is_commander(data):
+        raise ValueError("Total Commander size/hash mismatch; no output created")
+    ce_machine(data)
+    return data
 
 
-def get_dependencies(upstream_dir: Path | None) -> dict[str, bytes]:
-    result = {}
-    for name, (size, expected) in DEPENDENCIES.items():
-        if upstream_dir is None:
-            url = f"https://raw.githubusercontent.com/{UPSTREAM}/{REVISION}/{name}"
-            request = Request(url, headers={"User-Agent": "montero-wince-launcher/1.0"})
-            with urlopen(request, timeout=30) as response:
-                data = response.read(size + 1)
-        else:
-            with (upstream_dir / name).open("rb") as stream:
-                data = stream.read(size + 1)
-        if len(data) != size or blob_sha(data) != expected:
-            raise ValueError(f"Integrity check failed: {name}; no overlay was installed")
-        ce_machine(data)
-        result[name] = data
-    return result
+def entrypoint(root: Path) -> Path:
+    root = root.resolve(strict=True)
+    if not root.is_dir():
+        raise ValueError("Expected a repository, SD backup, or mounted SD root directory")
+    target = root / ENTRYPOINT
+    current = root
+    for part in ENTRYPOINT.parts:
+        current = current / part
+        if current.is_symlink():
+            raise ValueError("Refusing a symlink in the Navigation entry-point path")
+    if not target.is_file():
+        raise ValueError(f"Entry point not found: {target}")
+    return target
 
 
-def build(source_root: Path, output: Path, entrypoint: str = "Navigation/Navigation.exe",
-          upstream_dir: Path | None = None) -> Path:
-    source_root = source_root.resolve(strict=True)
-    entry = entry_path(entrypoint)
-    source = source_root / entry
-    if not source.resolve(strict=True).is_relative_to(source_root):
-        raise ValueError("Entry point resolves outside the source directory")
-    # Refuse a second install over an existing menu or unrelated support files.
-    companions = [entry.with_suffix(".mscr"), entry.parent / "OriginalApp.exe",
-                  entry.parent / "MortScript.exe", entry.parent / "cecmd.exe"]
-    for relative in companions:
-        if (source_root / relative).exists() or (source_root / relative).is_symlink():
-            raise ValueError(f"Source already contains {relative}; use an untouched backup")
+def verify_sd(root: Path) -> Path:
+    """Read-only and offline: check the actual card, not just a generated package."""
+    target = entrypoint(root)
+    data = target.read_bytes()
+    if not is_commander(data):
+        name = {AUTOKIT_BLOB: "AutoKit", MORTSCRIPT_BLOB: "the old MortScript launcher"}.get(
+            blob_sha(data), "another executable")
+        raise ValueError(f"{target} is still {name}, not Total Commander. "
+                         f"Bytes={len(data)}, Git blob SHA-1={blob_sha(data)}")
+    ce_machine(data)
+    return target
+
+
+def build(source_root: Path, output: Path, local_file: Path | None = None) -> Path:
+    """Create a fresh replacement folder; never modify source or install onto the SD."""
+    original = entrypoint(source_root).read_bytes()
+    original_machine = ce_machine(original)
     if output.exists() or output.is_symlink():
         raise ValueError("Output already exists; choose a NEW --output directory")
-    original = source.read_bytes()
-    original_machine = ce_machine(original)
-    dependencies = get_dependencies(upstream_dir)
-    if any(family(ce_machine(data)) != family(original_machine)
-           for data in dependencies.values()):
-        raise ValueError("CPU architecture mismatch; do not install these binaries")
-    script = (ROOT / "LaunchTotalCommander/Arthur.mscr").read_text(encoding="ascii")
-    script_bytes = script.replace("\r\n", "\n").replace("\n", "\r\n").encode("ascii")
-    runner = dependencies["LaunchTotalCommander/Arthur.exe"]
-    runtime = dependencies["LaunchTotalCommander/MortScript.exe"]
-    commander = dependencies["TC/cecmd.exe"]
+    commander = get_commander(local_file)
+    if family(original_machine) != family(ce_machine(commander)):
+        raise ValueError("CPU family mismatch; no replacement folder created")
     files = {
-        Path("LaunchTotalCommander/Arthur.exe"): runner,
-        Path("LaunchTotalCommander/Arthur.mscr"): script_bytes,
-        Path("LaunchTotalCommander/MortScript.exe"): runtime,
-        Path("LaunchTotalCommander/cecmd.exe"): commander,
-        entry: runner,
-        entry.with_suffix(".mscr"): script_bytes,
-        entry.parent / "MortScript.exe": runtime,
-        entry.parent / "cecmd.exe": commander,
-        entry.parent / "OriginalApp.exe": original,
+        ENTRYPOINT.as_posix(): commander,
+        "LaunchTotalCommander/LaunchTotalCommander.exe": commander,
+        "INSTALL.txt": INSTALL_TEXT.encode("ascii"),
+        "THIRD_PARTY.txt": NOTICE.encode("ascii"),
     }
     manifest = {
-        "upstream": UPSTREAM, "revision": REVISION, "entrypoint": entry.as_posix(),
-        "original_pe_machine": f"0x{original_machine:04x}",
-        "original_git_blob_sha1": blob_sha(original),
-        "hardware_tested": False,
-        "sha256": {p.as_posix(): hashlib.sha256(data).hexdigest() for p, data in files.items()},
+        "mode": "direct-whole-folder-replacement", "hardware_tested": False,
+        "upstream": UPSTREAM, "revision": REVISION, "entrypoint": ENTRYPOINT.as_posix(),
+        "source_git_blob_sha1": blob_sha(original),
+        "source_pe_machine": f"0x{original_machine:04x}",
+        "commander_git_blob_sha1": blob_sha(commander), "commander_size": len(commander),
+        "sha256": {name: hashlib.sha256(data).hexdigest() for name, data in files.items()},
     }
     output.parent.mkdir(parents=True, exist_ok=True)
-    stage = Path(tempfile.mkdtemp(prefix=".tc-stage-", dir=output.parent))
+    stage = Path(tempfile.mkdtemp(prefix=".tc-direct-", dir=output.parent))
     try:
-        for relative, data in files.items():
-            target = stage / relative
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(data)
+        for name, data in files.items():
+            path = stage / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+            if path.read_bytes() != data:
+                raise ValueError(f"Output verification failed: {name}")
         (stage / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
         if output.exists() or output.is_symlink():
-            raise ValueError("Output appeared during preparation; refusing to overwrite it")
+            raise ValueError("Output appeared during preparation; not overwriting it")
         stage.rename(output)
     finally:
         if stage.exists():
@@ -139,24 +167,30 @@ def build(source_root: Path, output: Path, entrypoint: str = "Navigation/Navigat
     return output
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source-root", type=Path, default=ROOT,
-                        help="Repository or untouched working SD-card backup")
-    parser.add_argument("--output", type=Path, default=ROOT / "dist/total-commander-sd-overlay")
-    parser.add_argument("--entrypoint", default="Navigation/Navigation.exe")
-    parser.add_argument("--upstream-dir", type=Path,
-                        help="Offline reference-project directory; hashes are still checked")
-    args = parser.parse_args()
+    parser.add_argument("--source-root", type=Path, default=ROOT)
+    parser.add_argument("--output", type=Path, default=ROOT / "dist/total-commander-direct")
+    offline = parser.add_mutually_exclusive_group()
+    offline.add_argument("--cecmd", type=Path, help="Local pinned TC/cecmd.exe for offline builds")
+    offline.add_argument("--upstream-dir", type=Path, help="Local reference project containing TC/cecmd.exe")
+    parser.add_argument("--verify-sd", type=Path, help="Only verify a mounted SD card; no writes/downloads")
+    args = parser.parse_args(argv)
     try:
-        output = build(args.source_root, args.output, args.entrypoint, args.upstream_dir)
+        if args.verify_sd is not None:
+            target = verify_sd(args.verify_sd)
+            print(f"VERIFIED: {target} is Total Commander ({EXPECTED_SIZE} bytes).")
+            return 0
+        local = args.upstream_dir / "TC/cecmd.exe" if args.upstream_dir is not None else args.cecmd
+        result = build(args.source_root, args.output, local)
     except (OSError, ValueError, URLError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1
-    print(f"Prepared: {output}")
-    print("Merge its CONTENTS onto a backed-up TEST SD card. Do not replace whole folders.")
-    print("The source files were not changed. This is an overlay, not a complete SD image.")
-    print("Windows CE / head-unit runtime behavior still requires a parked-vehicle test.")
+    print(f"Prepared COMPLETE replacement folder: {result / 'Navigation'}")
+    print("REPLACE the SD card's entire Navigation folder with this GENERATED Navigation folder.")
+    print("Do not copy the repository's original Navigation folder or use the old SD overlay.")
+    print("No menu, MortScript, or CarPlay fallback. Source files were not changed.")
+    print("Eject safely; restart the head unit normally; test while parked. Runtime is unverified.")
     return 0
 
 

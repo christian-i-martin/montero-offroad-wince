@@ -1,124 +1,100 @@
 # Montero Off-Road Windows CE
 
-First milestone: **open Total Commander from the existing SD navigation entry point**, while retaining access to AutoKit. This does not replace the factory TPMS screen, expose CAN data, or flash the head unit.
+## Current method: replace the ENTIRE SD-card Navigation folder
 
-## What the repository contains
+The head unit previously launched CarPlay after its `Navigation` directory was replaced with AutoKit. This version follows that same method: **Total Commander itself becomes `Navigation/Navigation.exe`**. There is no MortScript launcher, selection menu, or CarPlay fallback.
 
-Inspection of initial commit `6244fc1aadf80e83df296d6e5256ab4245e096d5` found:
+**Use the GENERATED folder below, not this repository's original `Navigation` folder.** The original is still the uploaded AutoKit snapshot, retained for reference and CPU-family comparison. Pulling this repository alone does not change that executable or install anything on the SD card.
 
-| File | Finding |
-| --- | --- |
-| `Navigation/Navigation.exe` | AutoKit renamed as the navigation executable. Its Git blob SHA (`0724152188983e82768750dd9d5a48f652d04ac8`) matches the reference project's `AutoKit/BIN/AutoKit.exe`. |
-| `Navigation/*.dll` and other assets | Existing support files. Keep them in place for AutoKit. |
-| `Navigator/Navigator.exe` | A different, 2,057,216-byte executable. It is **not** replaced by the default setup. |
-| `GenieTek/` and `autokit/` | Existing content; left unchanged. |
+## 1. Build on your computer
 
-The default target is therefore `Navigation/Navigation.exe`. The repository alone cannot prove which entry point the head unit actually launches. No CPU type or Windows CE version is assumed from its branding.
-
-## Prepare the launcher on your computer
-
-Requirements: **Python 3.10 or newer**, and internet access for three small reference binaries. Python runs on your computer, not on Windows CE. No third-party Python packages are needed.
-
-From your local repository:
+Python 3.10+ is required. From the repository root:
 
 ```sh
 git pull --ff-only
 python3 tools/prepare_total_commander.py
 ```
 
-On Windows, use `py -3 tools/prepare_total_commander.py` instead.
+On Windows use `py -3` instead of `python3`. The tool downloads only the pinned Total Commander/CE executable, verifies its length and Git blob hash, checks its PE headers, and compares its CPU family with `Navigation/Navigation.exe`. These checks are not proof of head-unit compatibility.
 
-This downloads the MortScript launcher, MortScript runtime, and Windows CE Total Commander from a pinned reference commit. It verifies their sizes and Git blob hashes, checks their PE/CPU-family headers against your existing executable, and creates:
+The output is:
 
 ```text
-dist/total-commander-sd-overlay/
-  LaunchTotalCommander/
-    Arthur.exe
-    Arthur.mscr
-    MortScript.exe
-    cecmd.exe
+dist/total-commander-direct/
   Navigation/
-    Navigation.exe       <- MortScript launcher, in the OUTPUT only
-    Navigation.mscr      <- same basename as the launcher
-    MortScript.exe
-    cecmd.exe
-    OriginalApp.exe      <- byte-for-byte copy of your existing Navigation.exe
-  manifest.json          <- source revision and output checksums
+    Navigation.exe                  <- Total Commander, 337,920 bytes
+  LaunchTotalCommander/
+    LaunchTotalCommander.exe        <- optional identical direct entry point
+  INSTALL.txt
+  THIRD_PARTY.txt
+  manifest.json
 ```
 
-**The existing repository executables are not overwritten.** A raw repository download is not a ready-to-run Total Commander installation; run the preparation command first. The result is an **overlay**, not a complete SD-card image.
+The generated `Navigation` folder contains only `Navigation.exe`: a byte-for-byte copy of the reference `TC/cecmd.exe` under the filename your head unit expects. It has no AutoKit assets, `OriginalApp.exe`, MortScript, or scripts. Windows CE API and device compatibility still need a parked-head-unit test.
 
-The launcher is self-contained in each folder. It uses `SystemPath("ScriptPath")` instead of assuming `\SDMEM`, `\Storage Card`, or another mount name. No Ford map-update procedure is involved.
+**The previous `dist/total-commander-sd-overlay` is obsolete. Do not use it.** If the new output directory already exists, choose a different `--output` path rather than overwriting it.
 
-### Use the actual working SD backup when it differs from this repository
+## 2. Replace the folder on your SD card
+
+1. Keep a computer-side copy of the current SD `Navigation` folder.
+2. Remove that old `Navigation` folder from the SD card.
+3. Copy **`dist/total-commander-direct/Navigation`** to the card's root as `Navigation`.
+4. Confirm the path is **`Navigation/Navigation.exe`**, not `Navigation/Navigation/Navigation.exe`.
+5. Eject safely, insert the card, restart the head unit normally, and open Navigation while parked.
+
+**Expected: Total Commander opens directly. No menu and no CarPlay.** This is now a complete folder replacement, NOT a merge with the old AutoKit directory. The optional generated `LaunchTotalCommander` folder is not needed when using the head unit's Navigation button.
+
+Leave `Navigator`, `GenieTek`, and other SD folders alone. Do not change internal storage, flash firmware, use a Ford map-update procedure, or perform a factory reset.
+
+## 3. Verify the actual SD card before testing
+
+After copying, replace the example path below with the actual mounted card root:
 
 ```sh
-python3 tools/prepare_total_commander.py --source-root "/path/to/working-sd-backup"
+python3 tools/prepare_total_commander.py --verify-sd "/Volumes/YOUR_SD_CARD"
 ```
 
-The executable saved as `OriginalApp.exe` comes from this source. Retain a separate full-card backup too: the builder backs up the entry-point executable, **not the entire card**.
+Windows example:
 
-## Install on a test SD card
+```powershell
+py -3 tools/prepare_total_commander.py --verify-sd "E:/"
+```
 
-1. Back up your **entire working card**. Use a separate test card cloned from it. Do not format or overwrite the only working copy.
-2. Copy the generated `LaunchTotalCommander` folder to the test card's root.
-3. Copy the **five files inside the generated `Navigation` folder** into the test card's **existing** `Navigation` folder. Allow replacing `Navigation.exe`, but keep all existing DLLs and other assets. **Do not replace the whole folder** with the generated folder; that would remove files AutoKit needs. In macOS Finder, avoid a folder-level Replace operation.
-4. With the car parked, insert the test card and open the same Navigation function that previously opened AutoKit.
-5. A menu should offer **Total Commander**, **Original app / CarPlay**, and **Exit**. Choose Total Commander for filesystem inspection.
+This check is offline and read-only. It confirms that the card's `Navigation/Navigation.exe` is Total Commander, and reports when it is still AutoKit, the old MortScript launcher, or another executable. Success begins with `VERIFIED:`.
 
-The `LaunchTotalCommander/Arthur.exe` entry point is also available directly if you later find a navigation-path selector or another way to launch a file. It opens Total Commander directly because that folder has no `OriginalApp.exe`.
+Expected length: **337,920 bytes**. Expected Git blob SHA-1:
 
-Do not run `MortScript.exe` by itself to start this setup. Launch the matching stub (`Navigation.exe` or `Arthur.exe`), with its same-named `.mscr` beside it.
+```text
+1925f097d2e2ef09516154b1d9638d38cc97a8c9
+```
 
-### First inspection
+This is a Git blob hash, not the ordinary SHA-1 printed by `shasum`.
 
-Browse and photograph the root folders, the SD mount name, and any system-information screen. Record the Windows CE version, resolution, and processor information when available. Do not delete or rename internal files, edit the registry, import `.reg` files, load drivers, or open vehicle communication ports.
+## If CarPlay still opens
 
-**Total Commander is not a read-only file manager.** Our script contains no registry edits, process-killing, driver installation, or CAN commands, but the third-party applications can save settings and Total Commander can modify files. Use it only for viewing and copying information during this milestone.
+First verify the actual SD card, then fully exit the old application/restart the head unit normally rather than just returning to its home screen. A verified replacement does not establish which path the head unit launches. If CarPlay still appears after a full restart, another entry point or an internal copy may be in use; investigate that rather than replacing `Navigator.exe` or internal files speculatively.
 
-## Troubleshooting and rollback
+If an application error appears instead, photograph the exact wording. Missing Windows CE APIs or other runtime incompatibilities can prevent startup. Restore your saved folder if needed. No successful hardware test is claimed by these tools.
 
-- **AutoKit opens immediately with no menu:** confirm the generated `Navigation/Navigation.exe` was copied, not the unmodified repository version. The head unit may use a different entry point; do not overwrite other executables by trial and error.
-- **A script is missing:** the launcher and script must share a basename, such as `Navigation.exe` / `Navigation.mscr`; `MortScript.exe` must be alongside them.
-- **An application is missing:** keep `cecmd.exe` alongside its launcher. Copy all five generated files into the existing Navigation folder.
-- **Not a valid application / architecture mismatch:** stop and restore the working card. Do not force past compatibility checks. Matching CPU families still does not establish OS/API compatibility.
-- **CarPlay or camera behavior changes:** exit the test setup and restore the full working SD backup before normal use. Runtime behavior and camera priority have not been validated on this head unit.
-- **Output already exists:** preserve or remove that build yourself, or choose a new `--output` path. The builder deliberately refuses to overwrite an existing output.
+## First successful launch
 
-For full rollback, restore the original working card. To undo only the default executable replacement on a computer, copy `Navigation/OriginalApp.exe` back over `Navigation/Navigation.exe`; the complete card backup remains the preferred recovery method.
+Browse to filesystem root `\` and photograph the folder names with the path visible. Identify the SD mount using its known folders, then inspect internal-storage listings without executing unfamiliar applications. Total Commander is a writable file manager and may save settings: do not delete internal files, edit the registry, import `.reg` files, load drivers, or open vehicle communication ports.
 
-### A different, confirmed navigation entry point
+This milestone only provides file-manager access. It does not replace the TPMS screen or implement access to CAN, voltage, elevation, steering angle, yaw, pitch, or roll.
 
-Only after identifying the actual path:
+## Offline build and validation
+
+An existing copy of the exact pinned binary can be used without internet access:
 
 ```sh
-python3 tools/prepare_total_commander.py \
-  --source-root "/path/to/untouched-sd-backup" \
-  --entrypoint "ActualFolder/ActualName.exe" \
-  --output "dist/alternate-entrypoint"
+python3 tools/prepare_total_commander.py --cecmd "/path/to/TC/cecmd.exe"
 ```
 
-The builder generates matching `.exe` / `.mscr` names and preserves that original executable. The alternate app must be a compatible Windows CE application; preserving its bytes does not guarantee it tolerates being run under a different filename.
-
-### Offline preparation
-
-An existing copy of the exact reference-project files can be used without network access:
-
-```sh
-python3 tools/prepare_total_commander.py --upstream-dir "/path/to/Ford-WINCE-Autokit"
-```
-
-The same pinned hashes are required. A different binary version is intentionally rejected rather than silently trusted. See [THIRD_PARTY.md](THIRD_PARTY.md).
-
-## Validation
+Alternatively use `--upstream-dir /path/to/Ford-WINCE-Autokit`. Both require the pinned hash. Use `--source-root /path/to/sd-backup` to compare against that backup's `Navigation/Navigation.exe` instead of the repository snapshot.
 
 ```sh
 python3 -m unittest discover -s tests -v
 python3 -m py_compile tools/prepare_total_commander.py
 ```
 
-The automated tests use **synthetic PE fixtures** to check packaging, preservation of the original executable, matching launcher/script filenames, CRLF output, manifests, architecture checks, and rejection of corrupt files or unsafe paths. They do not execute MortScript, Total Commander, or AutoKit and do not establish hardware compatibility. An actual parked-head-unit test is still required.
-
-## Next milestone
-
-After file-manager access is confirmed, identify the original vehicle-information application and its data interfaces. Steering angle, yaw, pitch/roll, elevation, and voltage access remain separate investigation work, not implemented capabilities of this launcher.
+The 20 offline tests use synthetic PE fixtures. They cover complete-folder output, absence of menu/AutoKit fallback files, preservation of the source, corruption/CPU checks, read-only SD verification, manifests, error handling, and cleanup. They do not execute Windows CE software, validate a live binary download in this environment, or test the physical head unit. See `THIRD_PARTY.md` for provenance.
