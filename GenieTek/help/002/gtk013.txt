@@ -1,0 +1,4 @@
+Browse as Text
+
+List the route road by road.
+Right side is the distance between car position and the road.

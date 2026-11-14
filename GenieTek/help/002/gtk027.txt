@@ -1,0 +1,10 @@
+System settings
+
+1. Map: Map settings. 
+2. Volume: Adjust the volume.
+3. Time: Select the time format.
+4. Voice: Select broadcast voice language.
+5. Language: Select system language.
+6. Default: Restore to factory default settings.
+7. About: Device information.
+

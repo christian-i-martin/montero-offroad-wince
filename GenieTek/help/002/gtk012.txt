@@ -1,0 +1,6 @@
+Route Info
+
+1. Browse as Text: Check the route road by road.
+2. Waypoint: Waypoint management page.
+3. Demo: Navigation simulation.
+4. Cancel route: Cancel all the route.

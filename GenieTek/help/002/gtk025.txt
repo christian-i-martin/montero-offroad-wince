@@ -1,0 +1,3 @@
+Recent Dest
+
+The list will show the navigated history.

@@ -1,0 +1,14 @@
+[Back to Map View]-Same function as 
+
+[Map] -Just being more descriptive.
+[Previous] -Same function as [<<]Just being more descriptive.
+[Help Menu] -Provides a short description on button function upon press.
+              
+Non selected "Button Description - Select to view"
+ [Go home]- Select home as your destination
+ [Address]- Enter road name or intersection as destination
+ 
+ [POI]- Enter point of interest as destination
+ [Recent dest.]- Select from recent destination
+ [My Favorite]- Select from stored favorites
+ [Long./Lat.]- Input longtitude and latitude coordinates of destination

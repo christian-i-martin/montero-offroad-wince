@@ -1,0 +1,9 @@
+Main menu
+
+1. Destination: Search the navigation target.
+2. Route Info: Route information.
+3. Browse Map: Browse the map.
+4. My favorite: My favorite list.
+5. Settings: System settings.
+6. GPS info: GPS status.
+7. Exit: Exit the program.

@@ -1,0 +1,4 @@
+My favorite
+
+Favorite list is empty.
+Please add some target in the favorite list first.

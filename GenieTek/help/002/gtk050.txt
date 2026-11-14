@@ -1,0 +1,4 @@
+Attraction 
+
+Please choose 1 attraction.
+Right side number is the distance between your position and the POI.

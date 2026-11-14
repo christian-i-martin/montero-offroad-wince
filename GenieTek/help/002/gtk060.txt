@@ -1,0 +1,7 @@
+My journey
+
+Start navigation: start my journey
+Store: restore for now
+Add point:add one destination into my journey
+Delete:delete destination
+Move up, move down: move the sequence of the destinations.

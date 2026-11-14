@@ -1,0 +1,8 @@
+Ready for navigation
+1. Go!: Start navigation.
+2. Add Waypoint: Add this target into waypoint list.
+3. Browse: Browse the map nearby the target.
+4. Home: Set the target as Home.
+5. Favorite: Add this target into favorite list.
+6. Edit: Edit the name in favorite list.
+7. Delete: Delete the target from list.

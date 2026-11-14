@@ -1,0 +1,6 @@
+Edit
+
+Name: Edit name
+Group:Edit gropu
+District:Edit district info
+Phone,Add: Edit etc.

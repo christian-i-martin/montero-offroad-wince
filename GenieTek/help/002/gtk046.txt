@@ -1,0 +1,5 @@
+Waypoint
+
+1. Continue: Continue to add waypoint.
+2. Go!: End waypoint management,and start navigation.
+3. Adjust: Adjust the waypoint sequence.

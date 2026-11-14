@@ -1,0 +1,3 @@
+longitude and latitude
+
+Please input 1 set of longitude and latitude data as a navigation target.

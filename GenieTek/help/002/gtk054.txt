@@ -1,0 +1,3 @@
+Photograph Navigation
+
+The file you choose has no coordinates or out of map's boundary. Please choose another file.

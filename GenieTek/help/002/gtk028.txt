@@ -1,0 +1,8 @@
+Map settings
+
+1. Map color: Map color by Day/Night/Auto mode.
+2. Map presentation: 2D/3D presentation.
+3. Map position: Map position by Track up or North up.
+4. Scale: Manual scale/Auto scale
+5. POI display: Select which POI category want to display on the map.
+6. Advance: Junction assist/Over speeding/3D building/Road warning switch

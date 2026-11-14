@@ -1,0 +1,9 @@
+Destination menu
+
+1. Address: Search address as navigation target.
+2. Intersection: Search intersection as navigation target.
+3. Recent dest: Recent navigated target list.
+4. POI: Point of interest.
+5. POI nearby: POI nearby.
+6. Philippines: Attraction information. 
+7. Long./Lat.: Search latitude and longitude as navigation target.

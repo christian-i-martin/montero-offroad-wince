@@ -1,0 +1,3 @@
+POI display
+
+Choose POI category which want to display on the map.

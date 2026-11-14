@@ -1,0 +1,2 @@
+District setting
+During the searching for the navigation target, you could search the target by city or by town.

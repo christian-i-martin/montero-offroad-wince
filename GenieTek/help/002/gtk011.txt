@@ -1,0 +1,6 @@
+Route arrangement principle
+
+1.  Fastest route
+2.  Shortest route
+3.  Highway prior
+4.  Avoid toll

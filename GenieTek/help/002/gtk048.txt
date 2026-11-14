@@ -1,0 +1,2 @@
+Input function
+Choose the prior input method.

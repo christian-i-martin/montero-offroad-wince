@@ -1,0 +1,1 @@
+malloc fail size = 893193608, line  = 11, g:\project\genietek\project\mmn_gt\tag\tag.phl.090330.phl.r4667\mmn\tool\cache_comm.c

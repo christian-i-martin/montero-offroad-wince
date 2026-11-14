@@ -1,0 +1,4 @@
+POI
+
+Please choose 1 POI.
+Right side number is the distance between your position and the POI.

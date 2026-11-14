@@ -1,0 +1,5 @@
+My favorite
+
+This is the favorite list of user.
+You could store targets in the favorite list.
+Choose one target for navigation.
