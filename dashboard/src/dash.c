@@ -29,7 +29,7 @@
 #include "render.h"
 #include "sun.h"
 
-#define DASH_VERSION "0.5.2"
+#define DASH_VERSION "0.5.3"
 #define WINDOW_CLASS L"MonteroDashboard"
 #define WINDOW_TITLE L"GPS - Navigation" /* SP_MAIN.ini [NAVIGATION] TITLE */
 

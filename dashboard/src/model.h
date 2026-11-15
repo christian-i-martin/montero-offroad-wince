@@ -37,15 +37,15 @@ enum { ADDRESS_NO_FILE, ADDRESS_WAITING, ADDRESS_OUTSIDE, ADDRESS_OK, ADDRESS_UN
 #define ADDRESS_TEXT 96
 
 /* Sampling: pressure every 30 s (1 h shown), outside temperature every 90 s (3 h), battery every
- * 15 s (30 min), sea-level pressure every 90 s (3 h). Elevation: a point each time it has changed
- * by 10 m from the last point while the car moves (GPS height drifts by several metres when parked),
- * the last 20 points kept (the user's choice: on flat roads nothing is added). */
+ * 15 s (30 min), sea-level pressure every 90 s (3 h). Elevation: a point every 150 m driven, the
+ * last 20 kept, so the graph shows the last 3 km of road (the user's choice). */
 #define PRESSURE_EVERY_MS 30000u
 #define OUTSIDE_EVERY_MS 90000u
 #define BATTERY_EVERY_MS 15000u
 #define SEALEVEL_EVERY_MS 90000u
-#define ELEVATION_STEP_M 10.0f
+#define ELEVATION_EVERY_M 150.0f
 #define ELEVATION_POINTS 20
+#define ELEVATION_RANGE "3 km"      /* ELEVATION_POINTS x ELEVATION_EVERY_M, the graph's note when full */
 #define SPEED_EVERY_MS 5000u         /* 120 x 5 s = 10 min */
 #define SPEED_WINDOW_MS 600000u
 #define MAP_DEFAULT_ZOOM 14          /* until the program knows the map files: then their highest level */
@@ -71,6 +71,9 @@ typedef struct {
     int year, month, day, hour, minute, second;
     int utc_offset_min;               /* in use: menu choice, else the unit's clock or setting */
     int gps_ok, satellites, car_ok;
+    int gps_wait;                     /* updates in a row without a GPS fix (1 at the first): the
+                                       * header's GPS icon shows on odd counts, so it blinks, 1 s on and
+                                       * 1 s off at the 1 s update, starting shown */
     int lights_on;                    /* headlights, as the bus reports them */
     int night, night_src;             /* dark colours; SRC_GPS: from the sun, SRC_CAR: from the headlights */
 
@@ -108,7 +111,7 @@ typedef struct {
     int gps_heading;                            /* hysteresis state */
     float speeds[3]; int speed_count;
     float speed_sum; int speed_n; unsigned speed_ms;   /* speed graph point being collected */
-    double moving_m, moving_s;
+    double moving_m, moving_s, elev_dist_m;      /* elev_dist_m: driven since the last graph point */
     int elev_graph_src;                         /* where the elevation graph's first point came from */
     float climb_v[24]; unsigned climb_t[24]; int climb_count, climb_next, climb_src; unsigned climb_last_ms;
     Series sealevel;

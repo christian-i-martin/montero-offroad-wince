@@ -1,4 +1,4 @@
-MONTERO DASHBOARD 0.5.2
+MONTERO DASHBOARD 0.5.3
 
 What it is
   A one-page off-road dashboard that the head unit's NAV button opens instead of
@@ -32,9 +32,9 @@ Using it
   The graphs use their whole width from the start; the small note above the
   outside, pressure and battery graphs says how much time they cover (for
   example "6 min") until they hold their full span (3 h, 1 h, 30 min). The
-  elevation graph adds a point each time the elevation has gone 10 m up or
-  down while driving and keeps the last 20; on a level road or while parked it
-  does not change. Its note says how long ago its oldest point was taken.
+  elevation graph adds a point every 150 m driven and keeps the last 20, so it
+  shows the last 3 km of road; while parked it does not change. Its note says
+  how much road it covers ("450 m", "1.5 km") until it reaches 3 km.
   It updates once a second. Hold the clock (top left) for 2 seconds for the
   menu: Time zone, Open file manager (Total Commander, if it was included),
   Close dashboard, Back. Pressing NAV again brings the dashboard back.
@@ -79,7 +79,8 @@ Address
 Clock
   The head unit's own clock resets to 8 June 2012, so the dashboard takes the
   time and date from GPS. The clock appears once GPS has a fix (it then keeps
-  running if the signal drops). Times are shown with AM and PM.
+  running if the signal drops). Times are shown with AM and PM. While there
+  is no fix, the GPS icon in the top bar blinks next to "Waiting for GPS".
   GPS gives UTC; the dashboard shows UTC+8
   unless you choose another time zone with the - and + buttons in the menu
   (30-minute steps). A choice is saved in dashboard-settings.txt next to

@@ -521,9 +521,11 @@ int main(int argc, char **argv)
     write_svg(argv[2], "parked-night.svg", &m, PAGE_DASHBOARD);
     write_svg(argv[2], "carinfo-night.svg", &m, PAGE_CARINFO);
     simulate(&m, SCENE_NO_GPS);
+    m.gps_wait |= 1; /* the blinking GPS icon in its shown second */
     write_svg(argv[2], "no-gps.svg", &m, PAGE_DASHBOARD);
     dash_init(&m);
     set_map_view(&m);
+    m.gps_wait = 1;
     write_svg(argv[2], "startup.svg", &m, PAGE_DASHBOARD);
     printf("wrote 7 previews to %s\n", argv[2]);
     return 0;

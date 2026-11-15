@@ -104,6 +104,7 @@ static void update_speed(DashModel *m, const DashInputs *in, double dt, unsigned
         double metres = speed / 3.6 * dt;
         m->moving_m += metres;
         m->moving_s += dt;
+        m->elev_dist_m += metres;
     }
     m->speed_sum += m->speed_kmh;
     m->speed_n++;
@@ -176,20 +177,22 @@ static void update_elevation(DashModel *m, const DashInputs *in, unsigned now)
         m->elev_src = SRC_NONE;
     }
 
-    /* the graph: the first value, then a point each time the elevation is 10 m above or below the
-     * last point while the car moves (2 km/h and up, as the speed panel counts it) */
+    /* the graph: the first value, then a point every 150 m driven (counted from 3 km/h, like the
+     * average speed, so a parked car adds nothing however the GPS height drifts) */
     if (m->elev_src != SRC_NONE) {
-        float last = 0.0f;
         if (m->elevation.count == 1 && m->elev_graph_src != m->elev_src)
             series_init(&m->elevation, ELEVATION_POINTS); /* the first point came from the car's sensor before
                                                            * GPS (or the other way): take it again, no false step */
         if (m->elevation.count == 0) {
             series_push(&m->elevation, m->elev_m, now);
             m->elev_graph_src = m->elev_src;
-        } else if (m->have_speed && m->speed_kmh > 0.0f &&
-                 series_get(&m->elevation, m->elevation.count - 1, &last, NULL) &&
-                 (m->elev_m - last >= ELEVATION_STEP_M || last - m->elev_m >= ELEVATION_STEP_M))
+            m->elev_dist_m = 0;
+        } else if (m->elev_dist_m >= ELEVATION_EVERY_M) {
             series_push(&m->elevation, m->elev_m, now);
+            m->elev_dist_m -= ELEVATION_EVERY_M;
+            if (m->elev_dist_m >= ELEVATION_EVERY_M)
+                m->elev_dist_m = 0; /* after a long gap: no burst of points with the same value */
+        }
     }
 }
 
@@ -393,6 +396,7 @@ void dash_update(DashModel *m, const DashInputs *in)
     if (!m->started)
         m->start_ms = now;
     m->gps_ok = in->gps_fresh && in->gps.have_rmc && in->gps.valid;
+    m->gps_wait = m->gps_ok ? 0 : m->gps_wait + 1;
     update_clock(m, in, now);
     if (m->clock_valid && !m->have_since) { /* the start time, even when the clock came later */
         long s = (long)m->hour * 3600 + m->minute * 60 + m->second - (long)((now - m->start_ms) / 1000u);

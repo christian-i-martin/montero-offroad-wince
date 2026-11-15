@@ -395,14 +395,20 @@ static const char *time_note(char *buf, int size, const Series *s, unsigned now,
     return buf;
 }
 
-/* The note over the elevation graph (a point per 10 m of climb or descent, the last 20): how long
- * ago its oldest point was taken ("25 min"); NULL while there is a single point. */
-static const char *elevation_note(char *buf, int size, const Series *s, unsigned now)
+/* The note over the elevation graph (a point every 150 m driven, the last 20): the road it covers,
+ * "3 km" once it holds all its points, before that "450 m" or "1.4 km"; NULL while there is a single
+ * point. */
+static const char *elevation_note(char *buf, int size, const Series *s)
 {
-    unsigned tick;
-    if (s->count < 2 || !series_get(s, 0, NULL, &tick))
+    int metres = (s->count - 1) * (int)ELEVATION_EVERY_M;
+    if (s->count < 2)
         return NULL;
-    span_text(buf, size, now - tick);
+    if (s->count >= ELEVATION_POINTS)
+        return ELEVATION_RANGE;
+    if (metres < 1000)
+        snprintf(buf, (size_t)size, "%d m", metres);
+    else
+        snprintf(buf, (size_t)size, "%d.%d km", (metres + 50) / 1000, (metres + 50) / 100 % 10);
     return buf;
 }
 
@@ -437,7 +443,8 @@ static void draw_carinfo_button(const Canvas *c, const Theme *t)
         c->glass(c->ctx, CARBTN_X, CARBTN_Y, CARBTN_W, CARBTN_H, CARBTN_H / 2, t->panel, t->alpha);
     c->round_rect(c->ctx, CARBTN_X, CARBTN_Y, CARBTN_W, CARBTN_H, CARBTN_H / 2, NO_FILL, t->line);
     icon_shape(c, g_carbtn_car, CARBTN_X + 10, CARBTN_Y + 4, t->text);
-    icon_shape(c, g_carbtn_badge, CARBTN_X + 10, CARBTN_Y + 4, t->accent);
+    /* the badge in the car's colour, not the accent: an orange "i" looked like a warning (user) */
+    icon_shape(c, g_carbtn_badge, CARBTN_X + 10, CARBTN_Y + 4, t->text);
 }
 
 int render_carinfo_button_hit(int x, int y)
@@ -469,7 +476,8 @@ static void draw_header(const Canvas *c, const Theme *t, const DashModel *m)
         text(c, x + 26, 25, FONT_HEADER, t->muted, buf);
     } else {
         strcpy(buf, "Waiting for GPS");
-        icon(c, ICON_GPS, x, 10, t->warn);
+        if (m->gps_wait % 2) /* the icon blinks until there is a fix; the text stays */
+            icon(c, ICON_GPS, x, 10, t->warn);
         text(c, x + 26, 25, FONT_HEADER, t->text, buf);
     }
     x += 26 + tw(c, FONT_HEADER, buf) + 20;
@@ -555,7 +563,7 @@ static void draw_elevation(const Canvas *c, const Theme *t, const DashModel *m)
     if (m->elev_src == SRC_CAR)
         panel_header(c, t, x, y, w, "ELEVATION", "Car sensor", "Car", t->text);
     else
-        panel_header(c, t, x, y, w, "ELEVATION", elevation_note(buf, sizeof buf, &m->elevation, m->now_ms), NULL,
+        panel_header(c, t, x, y, w, "ELEVATION", elevation_note(buf, sizeof buf, &m->elevation), NULL,
                      t->muted);
     if (m->elev_src != SRC_NONE)
         fmt_commas(buf, sizeof buf, iround(m->elev_m));

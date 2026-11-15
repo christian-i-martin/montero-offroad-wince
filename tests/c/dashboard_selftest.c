@@ -128,7 +128,7 @@ static void test_speeds(void)
     CHECK(m.have_speed && m.speed_kmh == 36.0f && !m.have_avg);
     step(51);
     CHECK(m.have_avg && NEAR(m.avg_kmh, 36.0, 0.01));
-    CHECK(m.elevation.count == 1);     /* 1000 m driven on the level: only the first point */
+    CHECK(m.elevation.count == 7);     /* about 980 m driven since GPS took over: 6 points of 150 m */
     in.gps.speed_dkmh = 1500;  /* one spike is ignored by the median */
     step(1);
     in.gps.speed_dkmh = 360;
@@ -290,13 +290,18 @@ static void rec_fill(void *ctx, int x, int y, int w, int h, unsigned rgb) { g_ca
 static void rec_round(void *ctx, int x, int y, int w, int h, int r, unsigned f, unsigned b) { g_calls++; }
 static DPoint g_curve[256]; /* the elevation graph's curve, as last drawn */
 static int g_curve_n;
+static int g_header_left; /* shapes drawn in the left half of the header (the GPS and lights icons) */
 static void rec_poly(void *ctx, const DPoint *p, int n, int w, unsigned rgb)
 {
-    int i;
+    int i, left = 1;
     g_calls++;
-    for (i = 0; i < n; i++)
+    for (i = 0; i < n; i++) {
         if (p[i].x < 0 || p[i].x > SCREEN_W || p[i].y < 0 || p[i].y > SCREEN_H)
             g_bad++;
+        if (p[i].x >= SCREEN_W / 2 || p[i].y >= HEADER_H)
+            left = 0;
+    }
+    g_header_left += left;
     if (w == 2 && n >= 2 && n <= 256 && p[0].x == 20 && p[0].y >= 300 && p[0].y <= 370) {
         memcpy(g_curve, p, (size_t)n * sizeof *p);
         g_curve_n = n;
@@ -533,18 +538,18 @@ static void test_graph_lines(void)
 }
 
 /* A short history fills the graph's width: 200 to 230 m in 4 points used to sit in the last few
- * pixels at the right, so the graph looked like a flat line. The note says what the graph covers:
- * for elevation how long ago its oldest point was taken, for the others the time until they hold
- * their full window (30 min, 1 h, 3 h). */
+ * pixels at the right, so the graph looked like a flat line. The note says what the graph covers
+ * until it is full: for elevation the road its points span (3 km when full), for the others the
+ * time (30 min, 1 h, 3 h when full). */
 static void test_graph_fills_width(void)
 {
     static const float climb[] = {200.0f, 210.0f, 220.0f, 230.0f};
     int i;
 
     reset();
-    step(700);                               /* GPS elevation, and 11 min 40 s of history */
+    step(700);                               /* GPS elevation */
     series_init(&m.elevation, ELEVATION_POINTS);
-    for (i = 0; i < 4; i++)                  /* the oldest point 10 min ago */
+    for (i = 0; i < 4; i++)                  /* 4 points, 150 m apart: 450 m of road */
         series_push(&m.elevation, climb[i], m.now_ms - 600000u + (unsigned)i * 200000u);
     g_curve_n = 0;
     g_texts[0] = '\0';
@@ -552,7 +557,7 @@ static void test_graph_fills_width(void)
     CHECK(g_curve_n == 5);
     CHECK(g_curve_n == 5 && g_curve[1].x == 20 && g_curve[2].x > 50 && g_curve[3].x > 90 && g_curve[4].x == 132);
     CHECK(g_curve_n == 5 && g_curve[1].y - g_curve[4].y > 30);  /* 30 m of climb is plainly visible */
-    CHECK(strstr(g_texts, "|E|L|E|V|A|T|I|O|N|10 min|") != NULL);
+    CHECK(strstr(g_texts, "|E|L|E|V|A|T|I|O|N|450 m|") != NULL);
 
     reset();                                 /* 3 minutes in: the battery graph spans 3 min, not 30 */
     for (i = 0; i < 180; i++) {
@@ -567,42 +572,81 @@ static void test_graph_fills_width(void)
     CHECK(strstr(g_texts, "30 min") == NULL && strstr(g_texts, "|1 h|") == NULL && strstr(g_texts, "|3 h|") == NULL);
 }
 
-/* The elevation graph: a point per 10 m of climb or descent while moving, nothing on the level or
- * while parked (GPS height drifts), the last 20 kept. */
+/* The elevation graph: a point every 150 m driven, on a level road too, nothing while parked
+ * (however the GPS height drifts), the last 20 kept: 3 km of road. The first point is taken again
+ * when GPS takes over from the car's sensor, so the graph does not start with a false step. */
 static void test_elevation_points(void)
 {
-    float v;
+    float v, prev;
     int i;
 
     reset();
-    step(12);                                /* GPS elevation 279 m, the first point */
+    in.gps.speed_dkmh = 0;                   /* parked */
+    step(12);                                /* the car's 200 m first, then GPS's 279 m */
     CHECK(m.elev_src == SRC_GPS && m.elevation.count == 1);
-    in.gps.speed_dkmh = 0;                   /* parked, the GPS height drifting 15 m: nothing */
-    for (i = 0; i < 30; i++) {
+    CHECK(series_get(&m.elevation, 0, &v, NULL) && NEAR(v, 279.0, 0.01));
+    for (i = 0; i < 600; i++) {              /* 10 minutes, the GPS height drifting 15 m: nothing */
         in.gps.altitude_dm = 2790 + (i % 2 ? 150 : -150);
         step(1);
     }
     in.gps.altitude_dm = 2790;
     step(10);
     CHECK(m.elevation.count == 1);
-    in.gps.speed_dkmh = 100;                 /* driving and climbing 1 m a second */
-    for (i = 1; i <= 40; i++) {
+    g_texts[0] = '\0';
+    render_dashboard(&g_rec, &m);
+    CHECK(strstr(g_texts, "|E|L|E|V|A|T|I|O|N|") != NULL && strstr(g_texts, "|E|L|E|V|A|T|I|O|N|0 m|") == NULL);
+
+    in.gps.speed_dkmh = 540;                 /* 54 km/h = 15 m/s on the level: a point every 10 s */
+    step(105);                               /* 1,575 m */
+    CHECK(m.elevation.count == 11);
+    g_texts[0] = '\0';
+    render_dashboard(&g_rec, &m);
+    CHECK(strstr(g_texts, "|E|L|E|V|A|T|I|O|N|1.5 km|") != NULL);
+
+    for (i = 1; i <= 300; i++) {             /* 4.5 km more, climbing 1 m a second */
         in.gps.altitude_dm = 2790 + i * 10;
         step(1);
     }
-    CHECK(m.elevation.count >= 3 && m.elevation.count <= 5);   /* about 40 m in 10 m steps (the average lags) */
-    for (i = 1; i < m.elevation.count; i++) {
-        float prev;
+    CHECK(m.elevation.count == ELEVATION_POINTS);
+    for (i = 1; i < m.elevation.count; i++) { /* 150 m of road and 10 m of climb between points */
         series_get(&m.elevation, i - 1, &prev, NULL);
         series_get(&m.elevation, i, &v, NULL);
-        CHECK(v - prev >= ELEVATION_STEP_M && v - prev < ELEVATION_STEP_M + 2.0f);
+        CHECK(NEAR(v - prev, 10.0, 0.5));
     }
-    for (i = 1; i <= 400; i++) {             /* 400 m more: only the last 20 points stay */
-        in.gps.altitude_dm = 3190 + i * 10;
+    g_texts[0] = '\0';
+    render_dashboard(&g_rec, &m);
+    CHECK(strstr(g_texts, "|E|L|E|V|A|T|I|O|N|3 km|") != NULL);
+}
+
+/* The header's GPS icon blinks while there is no fix (shown at the first update without one, then
+ * every other second); the text stays. With a fix it is always shown. */
+static void test_gps_blink(void)
+{
+    int shown[4], i;
+
+    reset();
+    in.gps_fresh = 0;
+    for (i = 0; i < 4; i++) {
         step(1);
+        g_header_left = 0;
+        g_texts[0] = '\0';
+        render_dashboard(&g_rec, &m);
+        shown[i] = g_header_left;
+        CHECK(strstr(g_texts, "|Waiting for GPS|") != NULL);
     }
-    CHECK(m.elevation.count == ELEVATION_POINTS);
-    CHECK(series_get(&m.elevation, ELEVATION_POINTS - 1, &v, NULL) && v > 650.0f);
+    CHECK(shown[0] > 0 && shown[1] == 0 && shown[2] == shown[0] && shown[3] == 0);
+    in.gps_fresh = 1;
+    for (i = 0; i < 2; i++) {
+        step(1);
+        g_header_left = 0;
+        render_dashboard(&g_rec, &m);
+        CHECK(g_header_left == shown[0]);
+    }
+    in.gps_fresh = 0;                        /* the signal lost again: shown first */
+    step(1);
+    g_header_left = 0;
+    render_dashboard(&g_rec, &m);
+    CHECK(g_header_left == shown[0]);
 }
 
 /* The car info page: header, the 16 tiles with the plate, Back; the header button that opens it. */
@@ -713,6 +757,7 @@ int main(void)
     test_graph_lines();
     test_graph_fills_width();
     test_elevation_points();
+    test_gps_blink();
     test_carinfo();
     test_render();
     test_speed_and_map();

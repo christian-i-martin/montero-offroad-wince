@@ -506,7 +506,7 @@ USB serial adapter would need a Windows CE driver added. Two built-in routes avo
 
 ## Dashboard
 
-`dashboard/` (version 0.5.2, **built, not run on the car yet**; 0.1.0 ran, see "First run" below) is
+`dashboard/` (version 0.5.3, **built, not run on the car yet**; 0.1.0 ran, see "First run" below) is
 the dashboard from the map-background design canvas
 (https://claude.ai/artifact/FkFvhi7mSFDTMhACtCK7ST, private; versions 0.1 to 0.3 followed the earlier
 column layout of https://claude.ai/artifact/9WDQyDaPa6RprDPPk3ST8x). It is a complete SD `Navigation`
@@ -535,27 +535,27 @@ pixels at the right (the 80 elevation points are 1.4 px apart, so 4 points over 
 took 4 px) and the rest was the flat line drawn from the first value. Since 0.5.1 the samples there
 are always span the whole width, oldest at the left edge and newest at the right; the note over a
 time graph says what it covers until its window is full ("6 min", "1.5 h"), and over the elevation
-graph how long ago its oldest point was taken. A single sample is a flat line across, and
-"Collecting data" shows only while there is none. Since 0.5.2 the elevation graph is no longer a
-distance profile (a point every 250 m, 80 points, 20 km): it gets a point each time the elevation
-has changed by 10 m from the last point, only while the car moves (2 km/h and up; GPS height drifts
-by several metres when parked), and keeps the last 20 points, evenly spaced (the user's choice). A
-level road adds nothing. While the graph has only its first point, that point is taken again when
-the height source changes (the car's sensor before GPS is ready, then GPS), so the graph does not
-start with a false step. The
+graph how much road its points span ("450 m", "1.5 km") until it shows its full 3 km. A single
+sample is a flat line across, and "Collecting data" shows only while there is none. The elevation
+graph is a distance profile: a point every 150 m driven (counted from 3 km/h, like the average
+speed, so a parked car adds nothing however the GPS height drifts), the last 20 kept, so it shows
+the last 3 km of road (the user's choice in 0.5.3; 0.5.0 had a point every 250 m over 20 km). 0.5.2
+tried a point per 10 m of climb or descent instead; the user preferred points by distance. While
+the graph has only its first point, that point is taken again when the height source changes (the
+car's sensor before GPS is ready, then GPS), so the graph does not start with a false step. The
 height of a change was never the problem: a 30 m climb moves the elevation line about 38 px.
 
 | Panel | Source | Rule |
 |---|---|---|
 | Pressure (right column), graph of 1 h | CarInfo `0x21` | sampled every 30 s; "weather" trend from sea-level pressure (needs GPS altitude) over at least 1 h, scaled to 3 h: 1 hPa = falling or rising, 3 hPa = falling fast |
-| Elevation (left column), graph of the last 20 changes of 10 m | GPS altitude, 10-second average | car's barometric elevation plus the last GPS-minus-car difference when GPS has no fix ("Car sensor", or "Car" when that does not fit); climb rate over about a minute; a graph point each time the elevation is 10 m above or below the last point while moving, the last 20 kept, the note saying how long ago the oldest was taken |
+| Elevation (left column), graph of the last 3 km | GPS altitude, 10-second average | car's barometric elevation plus the last GPS-minus-car difference when GPS has no fix ("Car sensor", or "Car" when that does not fit); climb rate over about a minute; a graph point every 150 m driven, the last 20 kept, the note saying how much road they span until it is 3 km |
 | Outside (right column), graph of 3 h | CarInfo `0x31` | sampled every 90 s; change shown after 30 min |
 | Heading (bottom left, 2/6) | GPS course above 6 km/h (back below 4 km/h) | otherwise the car's 8-point compass (`0x11`); a compass tape (2.4 px per degree, ticks every 5 degrees, the eight points as letters) under a fixed mark, then the point and the degrees ("Car compass": the point only) |
 | Battery (right column), graph of 30 min | CarInfo `0x40` | 13.2 V and up charging, 12.2 to 13.2 V not charging, below 12.2 V low, 14.8 V and up too high (low and too high in the warning colour) |
 | Map (whole screen, behind the panels) | GPS position, `\SD\Map\*.pack`, `\SD\Map\Day\*.pack` | north-up offline map with the car at (400, 260), the middle below the header; arrow along the GPS course while the heading comes from GPS, otherwise a dot (grey without a fix); starts at the highest zoom level the files hold (the user's rule: 15 with the zoom 15 pack, else 14) and goes back to it when the map style changes, unless +/- were used; dark map at half brightness at night, light map (`Map\Day`) by day, the dark one by day when there is no light one |
 | Address (bottom right, 2/6) | GPS position, `\SD\Map\*.addr` | nearest named road within 50 m (else "No named road nearby"), then one line: "Brgy." and the barangay (else "Near" and the nearest named place), a middle dot, city and province (the province left out when the line is too wide); looked up on its own thread after about 15 m or 30 s; the last address stays, marked "Last GPS position", without a fix; never logged |
 | Speed (left column, top) | GPS | current speed large (a smaller font for three digits), average (counts only above 3 km/h) and top speed (highest median of three readings) under it, both since the dashboard started and not saved. The model still keeps the 10-minute speed series; 0.4 does not draw it |
-| Header (semi-transparent, over the map) | GPS time, bus | clock: GPS UTC time and date (1024-week rollover corrected), kept running on the tick count when the signal drops; the unit's clock only when its year is 2020 or later. Time zone: the menu choice (`dashboard-settings.txt`), else UTC+8 (`DEFAULT_UTC_OFFSET_MIN` in `dash.c`, the user's choice). The model can also derive it from the unit's clock or time-zone setting, but `dash.c` always passes a zone because both are unreliable on this unit. Times are in 12-hour form with AM or PM (the user's choice, 0.5). GPS status ("Waiting for GPS" without a fix), "Headlights on" while the bus reports them (`0x52A` index 9 or `0x33` bit `0x04`), "No car data"; on the right sunset (with the time left; without it, or left out, when it would run into the items on the left) or sunrise from the last GPS position, then the car info button (an icon only: a car with an "i" badge) |
+| Header (semi-transparent, over the map) | GPS time, bus | clock: GPS UTC time and date (1024-week rollover corrected), kept running on the tick count when the signal drops; the unit's clock only when its year is 2020 or later. Time zone: the menu choice (`dashboard-settings.txt`), else UTC+8 (`DEFAULT_UTC_OFFSET_MIN` in `dash.c`, the user's choice). The model can also derive it from the unit's clock or time-zone setting, but `dash.c` always passes a zone because both are unreliable on this unit. Times are in 12-hour form with AM or PM (the user's choice, 0.5). GPS status ("Waiting for GPS" without a fix, its icon blinking 1 s on and 1 s off at the 1 s repaint, the user's choice in 0.5.3), "Headlights on" while the bus reports them (`0x52A` index 9 or `0x33` bit `0x04`), "No car data"; on the right sunset (with the time left; without it, or left out, when it would run into the items on the left) or sunrise from the last GPS position, then the car info button (an icon only: a car with an "i" badge) |
 | Day and night colours | GPS position and time; bus | dark from sunset to sunrise (the next sun event is sunrise), light from sunrise to sunset, checked every 10 s with the sunset time; the headlights decide only until GPS has given time and position (the unit's clock resets to 2012). Logged as `[colours] night, from sunset and sunrise` (or `from the headlights`) when it changes |
 
 Car info page (0.5, `render_carinfo` in `render.c`): opened with the button at the right end of the
