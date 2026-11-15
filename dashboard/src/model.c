@@ -400,7 +400,7 @@ void dash_update(DashModel *m, const DashInputs *in)
     }
     m->satellites = in->gps_fresh ? in->gps.satellites : 0;
     m->car_ok = in->car_fresh;
-    m->night = in->lights_on;
+    m->lights_on = in->lights_on;
     if (m->gps_ok && in->gps.have_position) {
         m->have_position = 1;
         m->lat = in->gps.lat_e6 / 1e6;
@@ -417,6 +417,13 @@ void dash_update(DashModel *m, const DashInputs *in)
     update_climb(m, now);
     update_car(m, in, now);
     update_sun(m, now);
+    if (m->sun_valid && m->sun_event != SUN_NONE) {
+        m->night = m->sun_event == SUN_SUNRISE; /* the next event is sunrise: the sun is down */
+        m->night_src = SRC_GPS;
+    } else { /* no GPS time and position yet (the unit's clock resets to 2012) */
+        m->night = in->lights_on;
+        m->night_src = SRC_CAR;
+    }
 
     m->last_ms = now;
     m->started = 1;

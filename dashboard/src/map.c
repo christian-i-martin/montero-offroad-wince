@@ -45,12 +45,51 @@ void map_free(MapSet *s)
     s->max_zoom = -1;
 }
 
+/* min_zoom and max_zoom of the style in use. */
+static void zoom_range(MapSet *s)
+{
+    int i;
+    s->min_zoom = 0;
+    s->max_zoom = -1;
+    for (i = 0; i < s->count; i++) {
+        const MapPack *p = &s->packs[i];
+        if (p->style != s->style)
+            continue;
+        if (s->max_zoom < 0) {
+            s->min_zoom = s->max_zoom = p->zoom;
+        } else {
+            if (p->zoom < s->min_zoom)
+                s->min_zoom = p->zoom;
+            if (p->zoom > s->max_zoom)
+                s->max_zoom = p->zoom;
+        }
+    }
+}
+
+int map_use_style(MapSet *s, int style)
+{
+    if (style < 0 || style >= MAP_STYLES)
+        style = MAP_DARK;
+    if (s->style_packs[style] == 0 && s->style_packs[1 - style] > 0)
+        style = 1 - style;
+    s->style = style;
+    zoom_range(s);
+    return style;
+}
+
 int map_add_pack(MapSet *s, void *file, map_read_fn read)
+{
+    return map_add_pack_style(s, file, read, MAP_DARK);
+}
+
+int map_add_pack_style(MapSet *s, void *file, map_read_fn read, int style)
 {
     unsigned char h[64];
     MapPack p;
     unsigned side;
 
+    if (style < 0 || style >= MAP_STYLES)
+        return 0;
     if (s->count >= MAP_MAX_PACKS || read(file, 0, h, sizeof h) != (int)sizeof h)
         return 0;
     if (memcmp(h, "MTPK", 4) != 0 || le32(h + 4) != 1 || le32(h + 28) != MAP_TILE || le32(h + 32) != 1)
@@ -60,6 +99,7 @@ int map_add_pack(MapSet *s, void *file, map_read_fn read)
     p.file = file;
     p.read = read;
     p.zoom = (int)le32(h + 8);
+    p.style = style;
     p.x0 = le32(h + 12);
     p.y0 = le32(h + 16);
     p.cols = le32(h + 20);
@@ -71,14 +111,10 @@ int map_add_pack(MapSet *s, void *file, map_read_fn read)
         p.rows > side - p.y0 || p.index_offset < 64)
         return 0;
     s->packs[s->count++] = p;
-    if (s->max_zoom < 0) {
-        s->min_zoom = s->max_zoom = p.zoom;
-    } else {
-        if (p.zoom < s->min_zoom)
-            s->min_zoom = p.zoom;
-        if (p.zoom > s->max_zoom)
-            s->max_zoom = p.zoom;
-    }
+    s->style_packs[style]++;
+    if (s->style_packs[s->style] == 0)
+        s->style = style;
+    zoom_range(s);
     return 1;
 }
 
@@ -86,7 +122,7 @@ int map_has_zoom(const MapSet *s, int zoom)
 {
     int i;
     for (i = 0; i < s->count; i++)
-        if (s->packs[i].zoom == zoom)
+        if (s->packs[i].zoom == zoom && s->packs[i].style == s->style)
             return 1;
     return 0;
 }
@@ -96,7 +132,8 @@ static const MapPack *find_pack(const MapSet *s, int zoom, unsigned x, unsigned 
     int i;
     for (i = 0; i < s->count; i++) {
         const MapPack *p = &s->packs[i];
-        if (p->zoom == zoom && x - p->x0 < p->cols && y - p->y0 < p->rows) /* unsigned: also x >= x0 */
+        if (p->zoom == zoom && p->style == s->style && x - p->x0 < p->cols &&
+            y - p->y0 < p->rows) /* unsigned: also x >= x0 */
             return p;
     }
     return NULL;
@@ -153,7 +190,7 @@ static const unsigned short *get_tile(MapSet *s, int zoom, unsigned x, unsigned 
     s->clock++;
     for (i = 0; i < s->cache_size; i++) {
         MapTile *t = &s->cache[i];
-        if (t->used && t->zoom == zoom && t->x == x && t->y == y) {
+        if (t->used && t->zoom == zoom && t->style == s->style && t->x == x && t->y == y) {
             t->last_use = s->clock;
             *fill = t->fill;
             return t->solid ? NULL : t->px;
@@ -181,6 +218,7 @@ static const unsigned short *get_tile(MapSet *s, int zoom, unsigned x, unsigned 
         map_png_free(rgb);
     slot->used = 1;
     slot->zoom = zoom;
+    slot->style = s->style;
     slot->x = x;
     slot->y = y;
     slot->last_use = s->clock;
@@ -240,6 +278,55 @@ double map_metres_per_pixel(double lat, int zoom)
     if (zoom > MAP_MAX_ZOOM)
         zoom = MAP_MAX_ZOOM;
     return 156543.03392804097 * cos(lat * MAP_PI / 180.0) / (double)(1u << zoom);
+}
+
+/* Largest n with n * n <= v (v small: corner radii). */
+static int small_isqrt(int v)
+{
+    int n = 0;
+    while ((n + 1) * (n + 1) <= v)
+        n++;
+    return n;
+}
+
+void map_tint(unsigned short *out, int w, int h, int stride, int bx, int by, int bw, int bh, int r, unsigned rgb,
+              int alpha)
+{
+    unsigned c = map_rgb565(rgb), cs = (c | c << 16) & 0x07E0F81Fu, a, keep;
+    int j;
+
+    if (alpha <= 0 || bw <= 0 || bh <= 0)
+        return;
+    a = alpha >= 256 ? 32u : (unsigned)alpha >> 3; /* 5-bit alpha: three channels mixed at once */
+    keep = 32u - a;
+    if (2 * r > bw)
+        r = bw / 2;
+    if (2 * r > bh)
+        r = bh / 2;
+    if (r < 0)
+        r = 0;
+    for (j = 0; j < bh; j++) {
+        int y = by + j, inset = 0, x0, x1, x;
+        unsigned short *row;
+        if (y < 0 || y >= h)
+            continue;
+        if (j < r || j >= bh - r) { /* rows in the rounded corners, measured at pixel centres */
+            int d = j < r ? 2 * (r - j) - 1 : 2 * (j - (bh - r)) + 1;
+            inset = r - (small_isqrt(4 * r * r - d * d) + 1) / 2;
+        }
+        x0 = bx + inset;
+        x1 = bx + bw - inset;
+        if (x0 < 0)
+            x0 = 0;
+        if (x1 > w)
+            x1 = w;
+        row = out + (long)y * stride;
+        for (x = x0; x < x1; x++) {
+            unsigned p = row[x], d = (p | p << 16) & 0x07E0F81Fu;
+            d = ((d * keep + cs * a) >> 5) & 0x07E0F81Fu;
+            row[x] = (unsigned short)(d | d >> 16);
+        }
+    }
 }
 
 static void fill_part(unsigned short *out, int stride, int x0, int y0, int x1, int y1, unsigned short c)

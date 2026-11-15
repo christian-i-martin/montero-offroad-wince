@@ -2,8 +2,9 @@
  * taken from the Barlow font files, so the layout can be checked on the build machine.
  * Usage: dashboard_preview FONT_DIR OUT_DIR [MAP_DIR [LAT LON]]
  * Writes driving.svg, parked-night.svg, no-gps.svg, startup.svg, menu.svg; the fonts are embedded
- * so any SVG viewer shows the real typeface. With MAP_DIR (a folder of *.pack files) the map is
- * composed by map.c exactly as on the head unit and embedded as a PNG picture, and an *.addr file
+ * so any SVG viewer shows the real typeface. With MAP_DIR (a folder of *.pack files, light ones for
+ * the day in its Day folder) the map is composed by map.c exactly as on the head unit and embedded
+ * as a PNG picture under the semi-transparent panels, and an *.addr file
  * there gives the address through addr.c; LAT LON move the demo drive there (default 46 N 7.5 E,
  * a made-up place). */
 #include <dirent.h>
@@ -148,7 +149,7 @@ static void svg_polygon(void *ctx, const DPoint *p, int n, unsigned fill)
 {
     char c[8];
     colour(c, fill);
-    fprintf(g_out, "<polygon fill=\"%s\" points=\"", c);
+    fprintf(g_out, "<polygon fill=\"%s\" shape-rendering=\"crispEdges\" points=\"", c);
     points(p, n);
     fprintf(g_out, "\"/>\n");
 }
@@ -160,6 +161,15 @@ static void svg_circle(void *ctx, int cx, int cy, int r, unsigned fill, unsigned
     colour(b, border);
     fprintf(g_out, "<circle cx=\"%d\" cy=\"%d\" r=\"%d\" fill=\"%s\" stroke=\"%s\" stroke-width=\"%d\"/>\n", cx, cy, r,
             fill == NO_FILL ? "none" : f, b, bw);
+}
+
+/* Semi-transparent panel: on the unit the colour is mixed into the pixels (map_tint). */
+static void svg_glass(void *ctx, int x, int y, int w, int h, int r, unsigned rgb, int alpha)
+{
+    char c[8];
+    colour(c, rgb);
+    fprintf(g_out, "<rect x=\"%d\" y=\"%d\" width=\"%d\" height=\"%d\" rx=\"%d\" fill=\"%s\" fill-opacity=\"%.3f\"/>\n",
+            x, y, w, h, r, c, alpha / 256.0);
 }
 
 static int svg_width(void *ctx, int font, const char *s)
@@ -274,12 +284,13 @@ static void base64(FILE *out, const unsigned char *d, long n);
 
 static int svg_map(void *ctx, int x, int y, int w, int h, int zoom, double px, double py, int night)
 {
-    static unsigned short pixels[400 * 400];
+    static unsigned short pixels[SCREEN_W * SCREEN_H];
     unsigned char *png;
     long size;
     int result;
-    if (g_map.count == 0 || w > 400 || h > 400)
+    if (g_map.count == 0 || w > SCREEN_W || h > SCREEN_H)
         return MAP_NO_FILES;
+    map_use_style(&g_map, night ? MAP_DARK : MAP_LIGHT); /* as dash.c does when the colours change */
     result = map_compose(&g_map, pixels, w, h, w, zoom, px, py, night);
     png = png_from_565(pixels, w, h, &size);
     fprintf(g_out, "<image x=\"%d\" y=\"%d\" width=\"%d\" height=\"%d\" href=\"data:image/png;base64,", x, y, w, h);
@@ -296,7 +307,7 @@ static int file_read_at(void *file, unsigned offset, void *buffer, unsigned size
     return (int)fread(buffer, 1, size, (FILE *)file);
 }
 
-static int open_maps(const char *dir)
+static int open_maps(const char *dir, int style)
 {
     DIR *d = opendir(dir);
     struct dirent *e;
@@ -316,7 +327,7 @@ static int open_maps(const char *dir)
             continue;
         snprintf(path, sizeof path, "%s/%s", dir, e->d_name);
         f = fopen(path, "rb");
-        if (f && !map_add_pack(&g_map, f, file_read_at)) {
+        if (f && !map_add_pack_style(&g_map, f, file_read_at, style)) {
             fprintf(stderr, "not a map pack: %s\n", path);
             fclose(f);
         }
@@ -345,16 +356,14 @@ static void set_map_view(DashModel *m)
     }
     if (g_map.count == 0)
         return;
+    map_use_style(&g_map, m->night ? MAP_DARK : MAP_LIGHT);
     m->map_min_zoom = g_map.min_zoom;
     m->map_max_zoom = g_map.max_zoom;
-    if (m->map_zoom > g_map.max_zoom)
-        m->map_zoom = g_map.max_zoom;
-    if (m->map_zoom < g_map.min_zoom)
-        m->map_zoom = g_map.min_zoom;
+    m->map_zoom = g_map.max_zoom; /* the map starts at the highest zoom level the files hold */
 }
 
 static const Canvas g_svg = {NULL, svg_fill, svg_round, svg_polyline, svg_polygon, svg_circle, svg_width, svg_text,
-                             svg_map};
+                             svg_map, svg_glass};
 
 static void base64(FILE *out, const unsigned char *d, long n)
 {
@@ -402,19 +411,21 @@ static double terrain(double d) /* elevation in metres after d metres driven */
     return 900.0 + 400.0 * sin(d / 6000.0) + 120.0 * sin(d / 1700.0);
 }
 
-/* A demo drive (made-up place: 46 N, 7.5 E, 2026-07-15) from 08:10 to 14:32 local time (UTC+2). */
+/* A demo drive (made-up place: 46 N, 7.5 E, 2026-07-15) from 08:10 to 14:32 local time, the time zone
+ * taken from the longitude (15 degrees an hour), so the scene is daytime wherever LAT LON put it. */
 static void simulate(DashModel *m, int scene)
 {
     DashInputs in;
     double dist = 0, course = 90;
     long t, total = 6 * 3600 + 22 * 60, local_s = 8 * 3600 + 10 * 60;
     unsigned seed = 12345;
+    int tz_min = (int)floor(g_lon / 15.0 + 0.5) * 60;
 
     memset(&in, 0, sizeof in);
     dash_init(m);
     in.clock_valid = 1;
     in.year = 2026; in.month = 7; in.day = 15;
-    in.system_utc_offset_min = 120;
+    in.system_utc_offset_min = tz_min;
     in.gps.have_rmc = in.gps.have_gga = in.gps.have_time = in.gps.have_position = 1;
     in.gps.fix_quality = 1;
     in.gps.lat_e6 = (int)floor(g_lat * 1e6 + 0.5);
@@ -423,7 +434,7 @@ static void simulate(DashModel *m, int scene)
     in.gps.year = 2026; in.gps.month = 7; in.gps.day = 15;
     in.car.have_compass = in.car.have_elevation = in.car.have_pressure = in.car.have_outside = in.car.have_battery = 1;
     if (scene == SCENE_PARKED_NIGHT)
-        total += 6 * 3600 + 33 * 60; /* stay out until 21:05 */
+        total += 7 * 3600 + 33 * 60; /* stay out until 22:05, after sunset */
     for (t = 0; t <= total; t++) {
         long s = local_s + t;
         int moving = (t / 300) % 5 != 4 && t < 6 * 3600 + 22 * 60; /* stop for 5 min every 25 min */
@@ -441,7 +452,7 @@ static void simulate(DashModel *m, int scene)
         e = terrain(dist);
         in.now_ms = (unsigned)(t * 1000 + 5000);
         in.hour = (int)(s / 3600 % 24); in.minute = (int)(s / 60 % 60); in.second = (int)(s % 60);
-        in.gps.utc_seconds = (int)((s - 7200) % 86400);
+        in.gps.utc_seconds = (int)(((s - tz_min * 60L) % 86400 + 86400) % 86400);
         in.gps_fresh = 1;
         in.gps.valid = 1;
         in.gps.satellites = 9;
@@ -472,11 +483,17 @@ int main(int argc, char **argv)
         fprintf(stderr, "usage: %s FONT_DIR OUT_DIR [MAP_DIR [LAT LON]]\n", argv[0]);
         return 2;
     }
-    if (!map_init(&g_map, 16))
+    if (!map_init(&g_map, 20))
         return 1;
-    if (argc >= 4 && !open_maps(argv[3])) {
-        fprintf(stderr, "no map packs in %s\n", argv[3]);
-        return 1;
+    if (argc >= 4) {
+        char day[1024];
+        snprintf(day, sizeof day, "%s/Day", argv[3]);
+        open_maps(argv[3], MAP_DARK);
+        open_maps(day, MAP_LIGHT); /* the light map for the day, when there is one */
+        if (g_map.count == 0) {
+            fprintf(stderr, "no map packs in %s\n", argv[3]);
+            return 1;
+        }
     }
     if (argc == 6) {
         g_lat = atof(argv[4]);

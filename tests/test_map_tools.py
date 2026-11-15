@@ -6,6 +6,7 @@ patterned (not one colour), all others are one-colour sea.
 import importlib.util
 import io
 import json
+import re
 from pathlib import Path
 import struct
 import sys
@@ -445,6 +446,41 @@ class StyleTests(unittest.TestCase):
         self.assertEqual(config["styles"]["montero-dark"]["style"], "montero-dark.json")
         self.assertIn("openmaptiles", config["data"])
         self.assertTrue((MAP_DIR / "style" / "montero-dark.json").exists())
+
+
+class LightStyleTests(unittest.TestCase):
+    """The day map: the dark style's layers with the light palette's colours."""
+
+    def setUp(self):
+        self.dark = json.loads(make_style.STYLE_PATH.read_text(encoding="utf-8"))
+        self.light = json.loads(make_style.LIGHT_STYLE_PATH.read_text(encoding="utf-8"))
+
+    def test_committed_light_style_matches_generator(self):
+        self.assertEqual(make_style.LIGHT_STYLE_PATH.read_text(encoding="utf-8"), make_style.render("light"))
+
+    def test_palettes_name_every_colour(self):
+        self.assertEqual(sorted(make_style.LIGHT), sorted(make_style.PALETTE_NAMES))
+        self.assertEqual(sorted(make_style.DARK), sorted(make_style.PALETTE_NAMES))
+
+    def test_same_layers_other_colours(self):
+        def colours(style):
+            return set(re.findall(r'"#[0-9A-Fa-f]{6}"', json.dumps(style)))
+
+        def without_colours(style):
+            return re.sub(r'"#[0-9A-Fa-f]{6}"', '"#"', json.dumps(style["layers"]))
+
+        self.assertEqual(without_colours(self.dark), without_colours(self.light))
+        self.assertFalse(colours(self.dark) & colours(self.light))  # no dark colour left over
+        self.assertEqual(self.light["name"], "Montero light")
+
+    def test_light_sea_colour_and_config(self):
+        self.assertEqual(build_map.style_water_colour(make_style.LIGHT_STYLE_PATH),
+                         int(make_style.LIGHT["WATER"][1:], 16))
+        config = json.loads((MAP_DIR / "tileserver" / "config-light.json").read_text())
+        self.assertEqual(config["styles"], {"montero-light": {"style": "montero-light.json"}})
+        dark_config = json.loads((MAP_DIR / "tileserver" / "config.json").read_text())
+        self.assertEqual(config["options"], dark_config["options"])
+        self.assertEqual(config["data"], dark_config["data"])
 
 
 if __name__ == "__main__":

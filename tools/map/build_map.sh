@@ -7,11 +7,11 @@
 #    polygons and Natural Earth, and turns the part inside MAP_VECTOR_BOUNDS into vector tiles
 #    in the OpenMapTiles schema (dist/map-build/tiles/openmaptiles.mbtiles). Skipped when that
 #    file exists and was built for the same MAP_VECTOR_BOUNDS.
-# 2. tileserver-gl (in Docker) draws PNG tiles from them with tools/map/style/montero-dark.json,
-#    on 127.0.0.1 only.
+# 2. tileserver-gl (in Docker) draws PNG tiles from them with tools/map/style/montero-dark.json
+#    (or montero-light.json with MAP_STYLE=light), on 127.0.0.1 only.
 # 3. tools/map/build_map.py fetches the tiles from that local server and writes the packs
-#    (default dist/map/Map; options such as --bounds, --min-zoom, --max-zoom, --output pass
-#    through). The tile server is stopped at the end.
+#    (default dist/map/Map, or dist/map/Map/Day for the light map; options such as --bounds,
+#    --min-zoom, --max-zoom, --output pass through). The tile server is stopped at the end.
 #
 # Environment:
 #   MAP_VECTOR_BOUNDS=119.4,12.4,124.5,18.8
@@ -24,6 +24,8 @@
 #   MAP_REFRESH=1          download newer source data if there is any, then rebuild
 #   MAP_JAVA_HEAP=2g       memory for planetiler's Java heap
 #   MAP_DOCKER_MEMORY=3g   memory limit of each container (protects other containers)
+#   MAP_STYLE=light        the light map for the day (the dashboard reads it from \SD\Map\Day\);
+#                          default dark, the map for the night and for days without a light map
 #
 # Downloads and intermediate files stay in dist/map-build/ (gitignored). The downloaded files are
 # untrusted data: they live in dist/map-build/sources/ and only planetiler reads them.
@@ -43,6 +45,11 @@ DOCKER_MEMORY="${MAP_DOCKER_MEMORY:-3g}"
 VECTOR_BOUNDS="${MAP_VECTOR_BOUNDS:-119.4,12.4,124.5,18.8}"
 MBTILES="$BUILD/tiles/openmaptiles.mbtiles"
 SERVER_NAME="montero-map-tileserver"
+case "${MAP_STYLE:-dark}" in
+    dark) STYLE_ID=montero-dark; CONFIG=config.json; OUTPUT="$ROOT/dist/map/Map" ;;
+    light) STYLE_ID=montero-light; CONFIG=config-light.json; OUTPUT="$ROOT/dist/map/Map/Day" ;;
+    *) echo "error: MAP_STYLE must be dark or light" >&2; exit 2 ;;
+esac
 
 for arg in "$@"; do
     if [ "$arg" = "--count" ] || [ "$arg" = "--help" ] || [ "$arg" = "-h" ]; then
@@ -51,7 +58,7 @@ for arg in "$@"; do
 done
 
 if ! python3 "$MAP_DIR/make_style.py" --check; then
-    echo "warning: the style file does not match make_style.py; using the file as it is" >&2
+    echo "warning: a style file does not match make_style.py; using the files as they are" >&2
 fi
 
 mkdir -p "$BUILD/sources" "$BUILD/tiles" "$BUILD/cache"
@@ -84,7 +91,7 @@ echo "== Starting the tile server on 127.0.0.1:$PORT"
 docker rm -f "$SERVER_NAME" >/dev/null 2>&1 || true
 docker run -d --rm --name "$SERVER_NAME" --memory="$DOCKER_MEMORY" \
     -p "127.0.0.1:$PORT:8080" \
-    -v "$MAP_DIR/tileserver/config.json:/data/config.json:ro" \
+    -v "$MAP_DIR/tileserver/$CONFIG:/data/config.json:ro" \
     -v "$MAP_DIR/style:/data/styles:ro" \
     -v "$BUILD/tiles:/data/tiles:ro" \
     "$TILESERVER_IMAGE" --config /data/config.json --port 8080 >/dev/null
@@ -101,11 +108,13 @@ until curl -sf "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; do
     sleep 1
 done
 
-echo "== Rendering and packing"
+echo "== Rendering and packing ($STYLE_ID)"
 python3 "$MAP_DIR/build_map.py" \
-    --url "http://127.0.0.1:$PORT/styles/montero-dark/256/{z}/{x}/{y}.png" \
-    --cache-key-file "$MAP_DIR/style/montero-dark.json" \
-    --cache-key-file "$MAP_DIR/tileserver/config.json" \
+    --url "http://127.0.0.1:$PORT/styles/$STYLE_ID/256/{z}/{x}/{y}.png" \
+    --style "$MAP_DIR/style/$STYLE_ID.json" \
+    --output "$OUTPUT" \
+    --cache-key-file "$MAP_DIR/style/$STYLE_ID.json" \
+    --cache-key-file "$MAP_DIR/tileserver/$CONFIG" \
     --cache-key-file "$MBTILES" \
     --data-bounds "$VECTOR_BOUNDS" \
     "$@"

@@ -7,6 +7,8 @@
  *              compass when stopped or without GPS
  *   speeds     average while moving and top speed, kept in memory since the dashboard started;
  *              the speed graph holds the last 10 minutes (a point every 5 s, the mean of that time)
+ *   day/night  dark colours from sunset to sunrise, worked out from the GPS position and time;
+ *              the headlights decide only until GPS has given both
  * Portable C (no Windows headers) so it can be tested on the build machine. */
 #ifndef MODEL_H
 #define MODEL_H
@@ -44,7 +46,7 @@ enum { ADDRESS_NO_FILE, ADDRESS_WAITING, ADDRESS_OUTSIDE, ADDRESS_OK, ADDRESS_UN
 #define ELEVATION_POINTS 80
 #define SPEED_EVERY_MS 5000u         /* 120 x 5 s = 10 min */
 #define SPEED_WINDOW_MS 600000u
-#define MAP_DEFAULT_ZOOM 14
+#define MAP_DEFAULT_ZOOM 14          /* until the program knows the map files: then their highest level */
 
 typedef struct {
     unsigned now_ms;                  /* GetTickCount() */
@@ -66,7 +68,9 @@ typedef struct {
     int clock_valid, clock_src;       /* SRC_GPS, SRC_CAR (the head unit's clock) or SRC_NONE */
     int year, month, day, hour, minute, second;
     int utc_offset_min;               /* in use: menu choice, else the unit's clock or setting */
-    int gps_ok, satellites, car_ok, night;
+    int gps_ok, satellites, car_ok;
+    int lights_on;                    /* headlights, as the bus reports them */
+    int night, night_src;             /* dark colours; SRC_GPS: from the sun, SRC_CAR: from the headlights */
 
     int have_speed;   float speed_kmh;
     int heading_src;  float heading_deg;  int compass_point;   /* compass_point 1..8 for SRC_CAR */

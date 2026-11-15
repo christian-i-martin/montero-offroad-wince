@@ -143,6 +143,55 @@ int main(int argc, char **argv)
     }
     CHECK(small.decoded == 9); /* three tiles, two slots: every draw decodes again */
     map_free(&small);
+
+    /* styles: the zoom 14 pack as the dark map, the zoom 15 pack as the light one */
+    {
+        MapSet st;
+        CHECK(map_init(&st, 4));
+        CHECK(map_add_pack(&st, f14, file_read_at));
+        CHECK(map_add_pack_style(&st, f15, file_read_at, MAP_LIGHT));
+        CHECK(st.count == 2 && st.style_packs[MAP_DARK] == 1 && st.style_packs[MAP_LIGHT] == 1);
+        CHECK(st.style == MAP_DARK && st.min_zoom == 14 && st.max_zoom == 14 && map_has_zoom(&st, 14));
+        CHECK(map_compose(&st, px, 8, 8, 8, 14, 1000.0 * 256 + 128, 2000.0 * 256 + 128, 0) == MAP_SHOWN &&
+              px[0] == c565(A)); /* cached as a dark tile */
+        CHECK(map_use_style(&st, MAP_LIGHT) == MAP_LIGHT && st.min_zoom == 15 && st.max_zoom == 15);
+        CHECK(map_has_zoom(&st, 15) && !map_has_zoom(&st, 14));
+        CHECK(map_compose(&st, px, 8, 8, 8, 14, 1000.0 * 256 + 128, 2000.0 * 256 + 128, 0) == MAP_OUTSIDE &&
+              px[0] == c565(MAP_OUTSIDE_RGB)); /* the cached dark tile is not used for the light map */
+        CHECK(map_compose(&st, px, 8, 8, 8, 15, 5.0 * 256 + 128, 5.0 * 256 + 128, 0) == MAP_SHOWN &&
+              px[0] == c565(A));
+        CHECK(map_use_style(&st, MAP_DARK) == MAP_DARK && st.max_zoom == 14);
+        CHECK(map_compose(&st, px, 8, 8, 8, 15, 5.0 * 256 + 128, 5.0 * 256 + 128, 0) == MAP_OUTSIDE);
+        CHECK(!map_add_pack_style(&st, f15, file_read_at, 7)); /* no such style */
+        map_free(&st);
+    }
+    {   /* only light packs: they are used whichever style is asked for */
+        MapSet lt;
+        CHECK(map_init(&lt, 2));
+        CHECK(map_add_pack_style(&lt, f15, file_read_at, MAP_LIGHT));
+        CHECK(lt.style == MAP_LIGHT && lt.max_zoom == 15 && map_use_style(&lt, MAP_DARK) == MAP_LIGHT);
+        map_free(&lt);
+    }
+
+    /* tinting for the semi-transparent panels */
+    {
+        unsigned short pic[20 * 10];
+        memset(pic, 0, sizeof pic);
+        map_tint(pic, 20, 10, 20, 0, 0, 20, 10, 0, 0xFFFFFF, 256);  /* solid */
+        CHECK(pic[0] == 0xFFFF && pic[199] == 0xFFFF);
+        memset(pic, 0, sizeof pic);
+        map_tint(pic, 20, 10, 20, 2, 2, 10, 6, 3, 0xFFFFFF, 128);    /* half white, box x 2..11, y 2..7 */
+        CHECK(pic[4 * 20 + 6] == 0x7BEF);                           /* RGB565 half grey */
+        CHECK(pic[2 * 20 + 2] == 0 && pic[2 * 20 + 3] == 0x7BEF);   /* the rounded corner is left alone */
+        CHECK(pic[4 * 20 + 1] == 0 && pic[4 * 20 + 12] == 0 && pic[1 * 20 + 6] == 0 && pic[8 * 20 + 6] == 0);
+        map_tint(pic, 20, 10, 20, -5, -5, 8, 8, 0, 0xFFFFFF, 256);   /* clipped at the picture's edges */
+        CHECK(pic[0] == 0xFFFF && pic[2 * 20 + 2] == 0xFFFF && pic[3 * 20 + 3] != 0xFFFF);
+        memset(pic, 0, sizeof pic);
+        map_tint(pic + 9 * 20, 20, 10, -20, 0, 0, 20, 1, 0, 0xFFFFFF, 256); /* bottom-up: top row last */
+        CHECK(pic[9 * 20] == 0xFFFF && pic[0] == 0);
+        map_tint(pic, 20, 10, 20, 0, 0, 20, 10, 0, 0xFFFFFF, 0);    /* alpha 0: nothing */
+        CHECK(pic[0] == 0);
+    }
     map_free(&s);
     fclose(f14);
     fclose(f15);

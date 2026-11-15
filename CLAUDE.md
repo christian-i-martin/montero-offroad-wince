@@ -32,19 +32,24 @@ The repository root mirrors the SD card root, plus reference material:
   also compiled on the Mac by `tests/test_carinfo_decode.py` and `tests/test_probe_selftest.py`.
   `src/probe.c` is the Windows CE program. The dashboard reuses these three files.
 - `dashboard/`: the dashboard (the future `Navigation.exe`). `src/model.c` (what is shown: GPS-first
-  elevation and heading with car fallbacks, speeds, histories, trends), `src/render.c` (the
-  800 x 480 layout, drawn through a small `Canvas` interface) and `src/sun.c` (sunset) are portable
-  C; `src/dash.c` is the Windows CE program (GDI drawing, GPS thread, bus client copied from the
-  probe). `fonts/` holds the Barlow TTFs (SIL OFL) shipped next to the exe. The agreed design is
-  the design canvas linked in the research doc's "Dashboard" section. `src/map.c` (offline map:
-  reads `*.pack` files, composes the view) and `src/pngdec.c` (PNG decoding through the vendored
+  elevation and heading with car fallbacks, speeds, histories, trends, day and night colours from
+  the sun), `src/render.c` (the 800 x 480 layout: the map across the whole screen under
+  semi-transparent panels, pixel-grid icons, smooth graphs; drawn through a small `Canvas`
+  interface) and `src/sun.c` (sunset) are portable C; `src/dash.c` is the Windows CE program (GDI
+  drawing into a 16-bit DIB back buffer, GPS thread, bus client copied from the probe). `fonts/`
+  holds the Barlow TTFs (SIL OFL) shipped next to the exe. The agreed design is the design canvas
+  linked in the research doc's "Dashboard" section: panels are tinted, never blurred (processor
+  time), icons are drawn on a pixel grid for the low-resolution screen, graphs are smooth curves,
+  and the map starts at the highest zoom its files hold. `src/map.c` (offline map: reads `*.pack`
+  files of the dark and light styles, composes the view, tints panels) and `src/pngdec.c` (PNG decoding through the vendored
   `third_party/stb_image.h`) are portable C too, and so is `src/addr.c` (offline address: reads the
   `*.addr` file, nearest named road, barangay, city, province).
 - `tools/map/`: builds the offline map on the Mac (Luzon by default) from OpenStreetMap data:
   `mtpack.py` (the `.pack` format, shared with `map.c`), `build_map.sh` (planetiler and
   tileserver-gl in Docker, then `build_map.py`, the packer), `make_style.py` and
-  `style/montero-dark.json` (our own dark map style). Output `dist/map/Map/`, copied to the SD card
-  root as `\SD\Map\`.
+  `style/montero-dark.json` and `montero-light.json` (our own map styles: the same layers with the
+  DARK and LIGHT palettes). Output `dist/map/Map/` (dark, the night map) and `dist/map/Map/Day/`
+  (light, the day map), copied to the SD card root as `\SD\Map\`.
 - `tools/address/`: builds the address file `dist/map/Map/luzon.addr` from the same OpenStreetMap
   extract: `mtaddr.py` (the `.addr` format and the reference lookup that `addr.c` must match),
   `build_address.sh` (osmium-tool in Docker, then `build_address.py`), `check_address.py`
@@ -104,6 +109,8 @@ into `dist/map-build/` the first time; other running containers can starve plane
 ```sh
 tools/map/build_map.sh                                   # Luzon, zoom 8 to 14 -> dist/map/Map
 tools/map/build_map.sh --min-zoom 15 --max-zoom 15       # add zoom 15 (separate pack file)
+MAP_STYLE=light tools/map/build_map.sh                   # the light day map -> dist/map/Map/Day
+python3 tools/map/make_style.py                          # rewrite both styles after a colour change
 tools/map/build_map.sh --bounds W,S,E,N --output DIR     # another area; must lie inside MAP_VECTOR_BOUNDS
 python3 tools/map/build_map.py --count --max-zoom 15     # tile counts only, no Docker
 python3 -m unittest tests.test_map_tools tests.test_map_reader -v   # packer, style, C map reader
@@ -115,7 +122,8 @@ python3 -m unittest tests.test_address_tools tests.test_addr_reader -v   # build
 The address and the position are shown on screen only: never write either to a log.
 
 `dashboard_preview FONT_DIR OUT_DIR MAP_DIR LAT LON` (built as in `tests/test_map_reader.py`)
-renders the previews with a real map composed by `map.c`.
+renders the previews with a real map composed by `map.c` (the light map from `MAP_DIR/Day` by day,
+when it is there); the demo drive's time zone follows LON, so its 14:32 scene is daytime anywhere.
 
 The Total Commander build refuses to overwrite an existing `--output` directory. On macOS,
 `test_verify_is_offline_and_read_only` fails because `verify_sd` resolves the `/var` to

@@ -506,26 +506,41 @@ USB serial adapter would need a Windows CE driver added. Two built-in routes avo
 
 ## Dashboard
 
-`dashboard/` (version 0.3.0, **built, not run on the car yet**; 0.1.0 ran, see "First run" below) is
-the one-page dashboard from the design canvas (https://claude.ai/artifact/9WDQyDaPa6RprDPPk3ST8x,
-private). It is a complete SD `Navigation` folder: `Navigation.exe`, `fonts/` (Barlow), `README.txt`,
-and `TotalCommander/cecmd.exe` when Total Commander was built. The map's files go in a separate
-`Map` folder at the SD card root (see "Map" and "Address" below). Columns are 1:2:2 wide (150, 301,
-301 px): outside, pressure, battery; heading (one row), elevation, speed; map (two rows), address.
-Every graph draws its first value flat from the left edge, so it fills its width from the first
-sample on ("Collecting data" only while there is none).
+`dashboard/` (version 0.4.0, **built, not run on the car yet**; 0.1.0 ran, see "First run" below) is
+the one-page dashboard from the map-background design canvas
+(https://claude.ai/artifact/FkFvhi7mSFDTMhACtCK7ST, private; versions 0.1 to 0.3 followed the earlier
+column layout of https://claude.ai/artifact/9WDQyDaPa6RprDPPk3ST8x). It is a complete SD `Navigation`
+folder: `Navigation.exe`, `fonts/` (Barlow), `README.txt`, and `TotalCommander/cecmd.exe` when Total
+Commander was built. The map's files go in a separate `Map` folder at the SD card root (see "Map"
+and "Address" below).
 
-| Tile | Source | Rule |
+Layout (800 x 480, `dashboard/src/render.c`): the offline map fills the whole screen, and every
+widget sits on its own semi-transparent panel over it. The panels are tinted, not blurred, to spare
+the processor (the user's rule): the panel colour is mixed into the map's pixels at 80 % by day and
+74 % at night, with no shadows. A 40 px header runs across the top; side columns are 1/6 of the
+screen wide (133 px): speed and elevation on the left, outside temperature, pressure and battery on
+the right; the heading panel (bottom left) and the address panel (bottom right) are 2/6 wide
+(266 px, 88 px tall); the zoom buttons, scale bar and map credit sit at the bottom centre, a
+north-up mark at the top right of the map. Icons are drawn on a pixel grid at the size they are
+shown (20 px in the header, 14 to 16 px in panels): whole-pixel corners, 2 px strokes, slopes of
+45 degrees or 2:1, so they stay recognizable on the low-resolution screen without smoothing.
+Graphs are smooth waves: the samples are averaged into at most 12 points, joined by a monotone
+cubic curve (it never rises above or dips below the two points it joins, so it invents no peaks)
+and drawn as a polyline of short pieces. Every graph draws its first value flat from the left
+edge, so it fills its width from the first sample on ("Collecting data" only while there is none).
+
+| Panel | Source | Rule |
 |---|---|---|
-| Pressure, graph of 1 h | CarInfo `0x21` | sampled every 30 s; "weather" trend from sea-level pressure (needs GPS altitude) over at least 1 h, scaled to 3 h: 1 hPa = falling or rising, 3 hPa = falling fast |
-| Elevation, graph of 20 km | GPS altitude, 10-second average | car's barometric elevation plus the last GPS-minus-car difference when GPS has no fix; climb rate over about a minute; a graph point every 250 m |
-| Outside, graph of 3 h | CarInfo `0x31` | sampled every 90 s; change shown after 30 min |
-| Heading (one row: rose left, degrees right) | GPS course above 6 km/h (back below 4 km/h) | otherwise the car's 8-point compass (`0x11`) |
-| Battery, graph of 30 min | CarInfo `0x40` | 13.2 V and up charging, 12.2 to 13.2 V not charging, below 12.2 V low, 14.8 V and up too high |
-| Map (wide column 3, rows 1 and 2) | GPS position, `\SD\Map\*.pack` | north-up offline map filling the whole tile (no title or label; rounded corners painted over), centred on the last GPS position; arrow along the GPS course while the heading comes from GPS, otherwise a dot (grey without a fix); +/- zoom through the levels the files hold (start at 14); half brightness at night |
-| Address (wide column 3, row 3) | GPS position, `\SD\Map\*.addr` | nearest named road within 50 m (else "No named road nearby"), "Brgy." and the barangay (else "Near" and the nearest named place), then city and province; looked up on its own thread after about 15 m or 30 s; the last address stays, marked "Last GPS position", without a fix; never logged |
-| Speed panel (wide column 2, row 3) | GPS | current speed large, average (counts only above 3 km/h) and top speed (highest median of three readings) small on the right, both since the dashboard started and not saved; graph of the last 10 min, a point every 5 s (mean of that time), none while GPS has no fix |
-| Header | GPS time, bus | clock: GPS UTC time and date (1024-week rollover corrected), kept running on the tick count when the signal drops; the unit's clock only when its year is 2020 or later. Time zone: the menu choice (`dashboard-settings.txt`), else UTC+8 (`DEFAULT_UTC_OFFSET_MIN` in `dash.c`, the user's choice). The model can also derive it from the unit's clock or time-zone setting, but `dash.c` always passes a zone because both are unreliable on this unit. Sunset or sunrise from the last GPS position. "Headlights on" and night colours from `0x52A` index 9 or `0x33` bit `0x04` |
+| Pressure (right column), graph of 1 h | CarInfo `0x21` | sampled every 30 s; "weather" trend from sea-level pressure (needs GPS altitude) over at least 1 h, scaled to 3 h: 1 hPa = falling or rising, 3 hPa = falling fast |
+| Elevation (left column), graph of 20 km | GPS altitude, 10-second average | car's barometric elevation plus the last GPS-minus-car difference when GPS has no fix ("Car sensor", or "Car" when that does not fit); climb rate over about a minute; a graph point every 250 m |
+| Outside (right column), graph of 3 h | CarInfo `0x31` | sampled every 90 s; change shown after 30 min |
+| Heading (bottom left, 2/6) | GPS course above 6 km/h (back below 4 km/h) | otherwise the car's 8-point compass (`0x11`); a compass tape (2.4 px per degree, ticks every 5 degrees, the eight points as letters) under a fixed mark, then the point and the degrees ("Car compass": the point only) |
+| Battery (right column), graph of 30 min | CarInfo `0x40` | 13.2 V and up charging, 12.2 to 13.2 V not charging, below 12.2 V low, 14.8 V and up too high (low and too high in the warning colour) |
+| Map (whole screen, behind the panels) | GPS position, `\SD\Map\*.pack`, `\SD\Map\Day\*.pack` | north-up offline map with the car at (400, 260), the middle below the header; arrow along the GPS course while the heading comes from GPS, otherwise a dot (grey without a fix); starts at the highest zoom level the files hold (the user's rule: 15 with the zoom 15 pack, else 14) and goes back to it when the map style changes, unless +/- were used; dark map at half brightness at night, light map (`Map\Day`) by day, the dark one by day when there is no light one |
+| Address (bottom right, 2/6) | GPS position, `\SD\Map\*.addr` | nearest named road within 50 m (else "No named road nearby"), then one line: "Brgy." and the barangay (else "Near" and the nearest named place), a middle dot, city and province (the province left out when the line is too wide); looked up on its own thread after about 15 m or 30 s; the last address stays, marked "Last GPS position", without a fix; never logged |
+| Speed (left column, top) | GPS | current speed large (a smaller font for three digits), average (counts only above 3 km/h) and top speed (highest median of three readings) under it, both since the dashboard started and not saved. The model still keeps the 10-minute speed series; 0.4 does not draw it |
+| Header (semi-transparent, over the map) | GPS time, bus | clock: GPS UTC time and date (1024-week rollover corrected), kept running on the tick count when the signal drops; the unit's clock only when its year is 2020 or later. Time zone: the menu choice (`dashboard-settings.txt`), else UTC+8 (`DEFAULT_UTC_OFFSET_MIN` in `dash.c`, the user's choice). The model can also derive it from the unit's clock or time-zone setting, but `dash.c` always passes a zone because both are unreliable on this unit. GPS status, "Headlights on" while the bus reports them (`0x52A` index 9 or `0x33` bit `0x04`), "No car data"; on the right sunset (with the time left) or sunrise from the last GPS position |
+| Day and night colours | GPS position and time; bus | dark from sunset to sunrise (the next sun event is sunrise), light from sunrise to sunset, checked every 10 s with the sunset time; the headlights decide only until GPS has given time and position (the unit's clock resets to 2012). Logged as `[colours] night, from sunset and sunrise` (or `from the headlights`) when it changes |
 
 Car data counts as current for 30 s after the last CarInfo reply, GPS for 3 s after the last RMC
 sentence. The bus client is the probe's: it joins as `TerminalA` (waits while another `TerminalA`
@@ -543,7 +558,8 @@ probe run 3 a day earlier (the probe log's file date), so the clock resets when 
 power and cannot be used for the time or the date; dashboard 0.2 takes both from GPS.
 
 Still open: whether `AUTORUN=1` starts it at boot and whether `Main.exe` then shows or hides it;
-how long the GDI repaint takes once a second; whether the unit's time-zone setting is right.
+how long the GDI repaint takes once a second (0.4 composes the whole 800 x 480 map and tints the
+panels every second); whether the unit's time-zone setting is right.
 
 ### Map (dashboard 0.2, **built and tested on the Mac only**)
 
@@ -555,19 +571,30 @@ OpenStreetMap data with `tools/map/` and stored as **Montero tile packs** (`*.pa
 stored once, each file below 2,000,000,000 bytes for FAT32 and 31-bit file offsets. The dashboard
 opens every `*.pack` in the `Map` folder beside its own folder (`\SD\Map\`) read-only, and
 `dashboard/src/map.c` reads the index entry and tile bytes on demand, decodes PNG with stb_image
-(`dashboard/src/pngdec.c`, PNG only), keeps 12 decoded tiles (RGB565, 128 KB each) and composes the
-299 x 271 view (the whole tile inside its border, no title) into a 16-bit DIB section that is
-copied onto the back buffer. `CreateDIBSection` is
-looked up at run time like the other optional GDI functions. Tests on the Mac:
-`tests/test_map_reader.py` (decoding, pixel placement, empty, corrupt and missing tiles, night,
-cache, bottom-up bitmaps) and SVG previews with the composed map embedded.
+(`dashboard/src/pngdec.c`, PNG only) and keeps decoded tiles (RGB565, 128 KB each). Since 0.4 the
+back buffer itself is an 800 x 480 RGB565 DIB section (bottom-up): the map is composed straight
+into its pixels across the whole screen, the panels are tinted into the same pixels
+(`map_tint`: the panel colour mixed in with a 5-bit alpha, the three channels at once, rounded
+corners worked out per row with whole numbers), and GDI then draws the text and shapes on the same
+bitmap. The full screen needs up to 15 tiles at once (5 across, 3 down), so 20 are kept (2.5 MB).
+`CreateDIBSection` is looked up at run time like the other optional GDI functions; without it the
+back buffer is an ordinary bitmap, with no map picture and solid panels. Packs in `\SD\Map\` are
+the dark map, packs in `\SD\Map\Day\` the light one; one `MapSet` holds both, tagged by style, the
+tile cache is keyed by style too, and `map_use_style` switches when the colours change (the zoom
+range follows the style in use). The 0.4 build imports exactly the same COREDLL functions as 0.3.
+Tests on the Mac: `tests/test_map_reader.py` (decoding, pixel placement, empty, corrupt and
+missing tiles, night, cache, bottom-up bitmaps, styles, tinting) and SVG previews with the
+composed map embedded.
 
 Making the map (`tools/map/build_map.sh`): planetiler 0.10.2 turns the Geofabrik Philippines
 extract (plus OpenStreetMap water polygons, Natural Earth and lake centerlines, about 2 GB of
 downloads) into OpenMapTiles vector tiles for the Luzon box `119.4,12.4,124.5,18.8` (about 5 min;
 reading the whole extract dominates, so a smaller box hardly saves time). tileserver-gl 5.7.0
-draws 8-bit palette PNG tiles from them with our own dark style (`tools/map/style/`, written by
-`make_style.py`): roads by class, tracks dashed ochre, paths dotted, water blue, peaks with heights;
+draws 8-bit palette PNG tiles from them with our own styles (`tools/map/style/`, written by
+`make_style.py`; the light one has the same layers with the LIGHT palette and is built with
+`MAP_STYLE=light`, into `dist/map/Map/Day`, through its own tile server configuration
+`tileserver/config-light.json` so the dark map's tile cache stays valid): roads by class, tracks
+dashed ochre, paths dotted, water blue, peaks with heights;
 unnamed tracks and paths from zoom 14, buildings only at 15. `build_map.py` fetches the tiles
 from that local server only, skips open sea below sea parents from zoom 11 (a one-colour tile is
 reused; tiny islets far from a coast could be missed), caches rendered tiles by a fingerprint of
@@ -576,15 +603,20 @@ limit). Test area east of Manila (zoom 8 to 15, 234 tiles): about 65 tiles/s, 7.
 dense Manila about 22 tiles/s and 32 KB per tile. The first Luzon build (2026-11-15, data up to
 2026-11-13) took 12 min with the vector tiles already made: zoom 8 to 14 in 7 packs, 244 MB; zoom
 15 in one pack of 416 MB (281,790 tiles, 102,729 rendered, 178,833 by the sea shortcut, about
-219 rendered tiles/s); 632 MB in all. The licences ask for "© OpenMapTiles
+219 rendered tiles/s); 632 MB in all. The first light map (2026-11-15, same data): zoom 8 to 14 in
+7 packs, 243.1 MB, 4 min (40,655 tiles rendered at about 166 per second, 54,034 by the sea
+shortcut); its zoom 15 in one pack of 414.0 MB, 8 min (102,957 rendered at about 206 per second,
+178,833 by the sea shortcut); 657 MB in all. The licences ask for "© OpenMapTiles
 © OpenStreetMap contributors" to be visible; the map shows "© OpenMapTiles © OpenStreetMap".
 No contour lines or hill shading yet (the OpenMapTiles schema has no elevation).
 
-The log gets `[map] N map files, zoom A to B` at start and, every 10 minutes, the zoom, tiles
-decoded, failures, read errors and the slowest map draw in ms. Open questions for the first run:
-whether `CreateDIBSection` with `BI_BITFIELDS` 565 works on this unit, how long a tile takes to
-decode from the SD card (the first draw after a zoom change decodes up to four), and whether the
-map is readable in sunlight.
+The log gets `[map] N dark and M light (Day folder) map files, zoom A to B` at start, `[map] light
+map` or `dark map` when the style changes, and, every 10 minutes, the zoom, tiles decoded,
+failures, read errors and the slowest map draw in ms. Open questions for the first run: whether
+`CreateDIBSection` with `BI_BITFIELDS` 565 works on this unit (now also as the back buffer that GDI
+draws text on), how long a tile takes to decode from the SD card (the first draw after a zoom or
+style change decodes up to 15), how long composing and tinting the full screen takes, and whether
+the map and the see-through panels are readable in sunlight.
 
 ### Address (dashboard 0.3, **built and tested on the Mac only**)
 

@@ -28,7 +28,7 @@
 #include "render.h"
 #include "sun.h"
 
-#define DASH_VERSION "0.3.0"
+#define DASH_VERSION "0.4.0"
 #define WINDOW_CLASS L"MonteroDashboard"
 #define WINDOW_TITLE L"GPS - Navigation" /* SP_MAIN.ini [NAVIGATION] TITLE */
 
@@ -294,7 +294,7 @@ static void set_lights(int on, const char *source)
 {
     on = on ? 1 : 0;
     if (on != g_lights)
-        log_line("[lights] %s (%s)", on ? "on: night colours" : "off: day colours", source);
+        log_line("[lights] %s (%s)", on ? "on" : "off", source);
     g_lights = on;
 }
 
@@ -755,17 +755,15 @@ static HBITMAP g_back_bitmap;
 /* ---------------------------------------------------------------- offline map (read-only) */
 
 /* The map files sit in a Map folder at the SD card root, beside the Navigation folder, so that
- * installing a new dashboard does not mean copying the map again. map.c composes the picture
- * into a 16-bit DIB section (a bitmap whose pixels the program can write), which is then copied
- * onto the back buffer. */
-typedef HBITMAP (WINAPI *dib_section_fn)(HDC, const BITMAPINFO *, UINT, void **, HANDLE, DWORD);
+ * installing a new dashboard does not mean copying the map again: the dark map in Map, the light
+ * one for the day in Map\Day. map.c composes the picture straight into the back buffer (a 16-bit
+ * DIB section, see create_back_buffer), where the panels are then tinted over it. The full screen
+ * needs up to 15 tiles at once (5 across, 3 down), so 20 are kept (128 KB each). */
+#define MAP_CACHE_TILES 20
 static MapSet g_map;
-static int g_map_ok, g_map_said;
-static HDC g_map_dc;
-static HBITMAP g_map_bitmap;
-static HGDIOBJ g_map_old;
-static unsigned short *g_map_bits;
-static int g_map_w, g_map_h, g_map_stride;
+static int g_map_ok;
+static int g_map_style = -1;        /* style asked for last: MAP_DARK at night, MAP_LIGHT by day */
+static int g_zoom_touched;          /* the zoom buttons were used: keep that zoom, else the highest level */
 static DWORD g_map_slowest_ms;
 
 static int file_read_at(void *file, unsigned offset, void *buffer, unsigned size)
@@ -803,56 +801,88 @@ static void sd_map_folder(WCHAR *folder)
     folder[MAX_PATH - 1] = 0;
 }
 
-static void map_open(void)
+/* Opens every *.pack in folder (read-only) as a pack of the given style. */
+static void add_packs(const WCHAR *folder, int style, int *bad, int *hidden)
 {
-    WCHAR folder[MAX_PATH], path[MAX_PATH];
+    WCHAR path[MAX_PATH];
     WIN32_FIND_DATAW found;
     HANDLE find;
-    int bad = 0, hidden = 0;
 
-    if (!map_init(&g_map, 12)) {
-        log_line("[map] not enough memory for the map");
-        return;
-    }
-    g_map_ok = 1;
-    sd_map_folder(folder);
     _snwprintf(path, MAX_PATH, L"%s*.pack", folder);
     path[MAX_PATH - 1] = 0;
     find = FindFirstFileW(path, &found);
-    if (find != INVALID_HANDLE_VALUE) {
-        do {
-            HANDLE h;
-            if (hidden_name(found.cFileName)) {
-                hidden++;
-                continue;
-            }
-            _snwprintf(path, MAX_PATH, L"%s%s", folder, found.cFileName);
-            path[MAX_PATH - 1] = 0;
-            h = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-            if (h == INVALID_HANDLE_VALUE) {
-                bad++;
-            } else if (!map_add_pack(&g_map, h, file_read_at)) {
-                CloseHandle(h);
-                bad++;
-            }
-        } while (FindNextFileW(find, &found));
-        FindClose(find);
-    }
-    if (g_map.count == 0) {
-        log_line("[map] no map files in the Map folder at the SD card root (%d unreadable, %d ._ files skipped)", bad,
-                 hidden);
+    if (find == INVALID_HANDLE_VALUE)
         return;
-    }
+    do {
+        HANDLE h;
+        if (hidden_name(found.cFileName)) {
+            (*hidden)++;
+            continue;
+        }
+        _snwprintf(path, MAX_PATH, L"%s%s", folder, found.cFileName);
+        path[MAX_PATH - 1] = 0;
+        h = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (h == INVALID_HANDLE_VALUE) {
+            (*bad)++;
+        } else if (!map_add_pack_style(&g_map, h, file_read_at, style)) {
+            CloseHandle(h);
+            (*bad)++;
+        }
+    } while (FindNextFileW(find, &found));
+    FindClose(find);
+}
+
+/* The zoom range of the style in use; the highest level unless the zoom buttons were used. */
+static void map_zoom_range(void)
+{
     g_model.map_min_zoom = g_map.min_zoom;
     g_model.map_max_zoom = g_map.max_zoom;
-    if (g_model.map_zoom > g_map.max_zoom)
+    if (!g_zoom_touched || g_model.map_zoom > g_map.max_zoom)
         g_model.map_zoom = g_map.max_zoom;
     if (g_model.map_zoom < g_map.min_zoom)
         g_model.map_zoom = g_map.min_zoom;
     while (g_model.map_zoom > g_map.min_zoom && !map_has_zoom(&g_map, g_model.map_zoom))
         g_model.map_zoom--;
-    log_line("[map] %d map files, zoom %d to %d, showing %d (%d unreadable, %d ._ files skipped)", g_map.count,
-             g_map.min_zoom, g_map.max_zoom, g_model.map_zoom, bad, hidden);
+}
+
+static void map_open(void)
+{
+    WCHAR folder[MAX_PATH], day[MAX_PATH];
+    int bad = 0, hidden = 0;
+
+    if (!map_init(&g_map, MAP_CACHE_TILES)) {
+        log_line("[map] not enough memory for the map");
+        return;
+    }
+    g_map_ok = 1;
+    sd_map_folder(folder);
+    _snwprintf(day, MAX_PATH, L"%sDay\\", folder);
+    day[MAX_PATH - 1] = 0;
+    add_packs(folder, MAP_DARK, &bad, &hidden);
+    add_packs(day, MAP_LIGHT, &bad, &hidden);
+    if (g_map.count == 0) {
+        log_line("[map] no map files in the Map folder at the SD card root (%d unreadable, %d ._ files skipped)", bad,
+                 hidden);
+        return;
+    }
+    map_use_style(&g_map, MAP_DARK);
+    map_zoom_range();
+    log_line("[map] %d dark and %d light (Day folder) map files, zoom %d to %d, showing %d (%d unreadable, %d ._ "
+             "files skipped)", g_map.style_packs[MAP_DARK], g_map.style_packs[MAP_LIGHT], g_map.min_zoom,
+             g_map.max_zoom, g_model.map_zoom, bad, hidden);
+}
+
+/* Dark map at night, light map by day (the dark one when there is no light one). */
+static void map_follow_colours(void)
+{
+    int want = g_model.night ? MAP_DARK : MAP_LIGHT, used;
+    if (!g_map_ok || g_map.count == 0 || want == g_map_style)
+        return;
+    g_map_style = want;
+    used = map_use_style(&g_map, want);
+    map_zoom_range();
+    log_line("[map] %s map, zoom %d to %d, showing %d", used == MAP_LIGHT ? "light" : "dark", g_map.min_zoom,
+             g_map.max_zoom, g_model.map_zoom);
 }
 
 /* ---------------------------------------------------------------- address (read-only) */
@@ -992,54 +1022,59 @@ static void map_step(int direction)
         z += direction;
     if (z >= g_map.min_zoom && z <= g_map.max_zoom)
         g_model.map_zoom = z;
+    g_zoom_touched = 1;
 }
 
-static int map_bitmap(int w, int h)
+/* The back buffer: an 800 x 480 RGB565 DIB section when CreateDIBSection is there (looked up at
+ * run time, like the other optional GDI functions), so the map can be composed and the panels
+ * tinted straight into its pixels while GDI draws the text and shapes on the same bitmap.
+ * Otherwise an ordinary bitmap: no map picture, and solid panels. */
+typedef HBITMAP (WINAPI *dib_section_fn)(HDC, const BITMAPINFO *, UINT, void **, HANDLE, DWORD);
+static unsigned short *g_back_bits; /* bottom-up: the top row is the last one in memory */
+static int g_back_stride;           /* pixels per row */
+
+static void create_back_buffer(HDC screen)
 {
     struct { BITMAPINFOHEADER h; DWORD masks[3]; } info;
-    dib_section_fn create;
-    HMODULE core;
+    HMODULE core = GetModuleHandleW(L"coredll.dll");
+    dib_section_fn create = core ? (dib_section_fn)GetProcAddressW(core, L"CreateDIBSection") : NULL;
     void *bits = NULL;
 
-    if (g_map_bitmap && g_map_w == w && g_map_h == h)
-        return 1;
-    core = GetModuleHandleW(L"coredll.dll");
-    create = core ? (dib_section_fn)GetProcAddressW(core, L"CreateDIBSection") : NULL;
-    if (g_map_dc == NULL)
-        g_map_dc = CreateCompatibleDC(g_back);
-    if (create == NULL || g_map_dc == NULL) {
-        if (!g_map_said++)
-            log_line("[map] CreateDIBSection %s; no map picture", create ? "found but no drawing context" : "missing");
-        return 0;
+    g_back = CreateCompatibleDC(screen);
+    if (create) {
+        memset(&info, 0, sizeof info);
+        info.h.biSize = sizeof info.h;
+        info.h.biWidth = SCREEN_W;
+        info.h.biHeight = SCREEN_H; /* bottom-up, which every Windows CE version supports */
+        info.h.biPlanes = 1;
+        info.h.biBitCount = 16;
+        info.h.biCompression = BI_BITFIELDS;
+        info.masks[0] = 0xF800; /* RGB565 */
+        info.masks[1] = 0x07E0;
+        info.masks[2] = 0x001F;
+        g_back_bitmap = create(g_back, (const BITMAPINFO *)&info, DIB_RGB_COLORS, &bits, NULL, 0);
+        if (g_back_bitmap == NULL || bits == NULL) {
+            log_line("[screen] cannot create the 16-bit back buffer (error %lu): no map picture, solid panels",
+                     GetLastError());
+            if (g_back_bitmap)
+                DeleteObject(g_back_bitmap);
+            g_back_bitmap = NULL;
+            bits = NULL;
+        }
+    } else {
+        log_line("[screen] CreateDIBSection missing: no map picture, solid panels");
     }
-    if (g_map_bitmap) {
-        SelectObject(g_map_dc, g_map_old);
-        DeleteObject(g_map_bitmap);
-        g_map_bitmap = NULL;
-    }
-    memset(&info, 0, sizeof info);
-    info.h.biSize = sizeof info.h;
-    info.h.biWidth = w;
-    info.h.biHeight = h; /* bottom-up, which every Windows CE version supports */
-    info.h.biPlanes = 1;
-    info.h.biBitCount = 16;
-    info.h.biCompression = BI_BITFIELDS;
-    info.masks[0] = 0xF800; /* RGB565 */
-    info.masks[1] = 0x07E0;
-    info.masks[2] = 0x001F;
-    g_map_bitmap = create(g_map_dc, (const BITMAPINFO *)&info, DIB_RGB_COLORS, &bits, NULL, 0);
-    if (g_map_bitmap == NULL || bits == NULL) {
-        if (!g_map_said++)
-            log_line("[map] cannot create the map bitmap (error %lu)", GetLastError());
-        g_map_bitmap = NULL;
-        return 0;
-    }
-    g_map_old = SelectObject(g_map_dc, g_map_bitmap);
-    g_map_bits = (unsigned short *)bits;
-    g_map_w = w;
-    g_map_h = h;
-    g_map_stride = ((w * 2 + 3) & ~3) / 2; /* rows are padded to 4 bytes */
-    return 1;
+    if (g_back_bitmap == NULL)
+        g_back_bitmap = CreateCompatibleBitmap(screen, SCREEN_W, SCREEN_H);
+    SelectObject(g_back, g_back_bitmap);
+    g_back_bits = (unsigned short *)bits;
+    g_back_stride = ((SCREEN_W * 2 + 3) & ~3) / 2; /* rows are padded to 4 bytes */
+}
+
+/* Row y (0 = top) of the back buffer. */
+static unsigned short *back_row(int y)
+{
+    return g_back_bits + (long)(SCREEN_H - 1 - y) * g_back_stride;
 }
 
 static int gdi_map(void *ctx, int x, int y, int w, int h, int zoom, double px, double py, int night)
@@ -1048,17 +1083,22 @@ static int gdi_map(void *ctx, int x, int y, int w, int h, int zoom, double px, d
     int result;
     if (!g_map_ok || g_map.count == 0)
         return MAP_NO_FILES;
-    if (!map_bitmap(w, h)) {
+    if (g_back_bits == NULL || x < 0 || y < 0 || w <= 0 || h <= 0 || x + w > SCREEN_W || y + h > SCREEN_H) {
         gdi_fill_rect(ctx, x, y, w, h, MAP_OUTSIDE_RGB);
         return MAP_OUTSIDE;
     }
-    /* bottom-up bitmap: the top row is the last one in memory */
-    result = map_compose(&g_map, g_map_bits + (long)(h - 1) * g_map_stride, w, h, -g_map_stride, zoom, px, py, night);
-    BitBlt((HDC)ctx, x, y, w, h, g_map_dc, 0, 0, SRCCOPY);
+    result = map_compose(&g_map, back_row(y) + x, w, h, -g_back_stride, zoom, px, py, night);
     took = GetTickCount() - start;
     if (took > g_map_slowest_ms)
         g_map_slowest_ms = took;
     return result;
+}
+
+/* Semi-transparent panel, mixed into the back buffer's pixels (GDI on Windows CE draws at once,
+ * so the pixels are up to date). */
+static void gdi_glass(void *ctx, int x, int y, int w, int h, int radius, unsigned rgb, int alpha)
+{
+    map_tint(back_row(0), SCREEN_W, SCREEN_H, -g_back_stride, x, y, w, h, radius, rgb, alpha);
 }
 
 static void paint(HDC target)
@@ -1073,6 +1113,7 @@ static void paint(HDC target)
     c.text_width = gdi_text_width;
     c.text = gdi_text;
     c.map = gdi_map;
+    c.glass = g_back_bits ? gdi_glass : NULL;
     render_dashboard(&c, &g_model);
     if (g_menu)
         render_menu(&c, &g_model, g_has_files, DASH_VERSION);
@@ -1111,6 +1152,15 @@ static void tick(void)
     in.tz_override = g_tz_set;
     in.tz_override_min = g_tz_min;
     dash_update(&g_model, &in);
+    {
+        static int last_night = -1, last_src = -1;
+        if (g_model.night != last_night || g_model.night_src != last_src)
+            log_line("[colours] %s, from %s", g_model.night ? "night" : "day",
+                     g_model.night_src == SRC_GPS ? "sunset and sunrise" : "the headlights (no GPS time and position yet)");
+        last_night = g_model.night;
+        last_src = g_model.night_src;
+    }
+    map_follow_colours();
     address_to_model();
     if (g_model.clock_src == SRC_GPS) { /* once: what the GPS clock gave against the unit's clock */
         static int logged;
@@ -1296,9 +1346,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous, LPWSTR command_line, 
         return 1;
     }
     screen = GetDC(g_main);
-    g_back = CreateCompatibleDC(screen);
-    g_back_bitmap = CreateCompatibleBitmap(screen, SCREEN_W, SCREEN_H);
-    SelectObject(g_back, g_back_bitmap);
+    create_back_buffer(screen);
     resolve_gdi();
     load_fonts(g_back);
     ReleaseDC(g_main, screen);

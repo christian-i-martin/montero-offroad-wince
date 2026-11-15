@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
-"""Writes tools/map/style/montero-dark.json, the map style the tile renderer uses.
+"""Writes tools/map/style/montero-dark.json and montero-light.json, the map styles the tile
+renderer uses: the dark one for the night (and by day when there is no light map), the light one
+for the day.
 
 A "style" is a MapLibre GL style file: it says which layers of the vector tiles to draw, in which
 order, with which colours and line widths. The vector tiles follow the OpenMapTiles schema
 (https://openmaptiles.org/schema/): layers such as water, landcover, transportation (roads) and
 place (town names). This style is written from that schema for the dashboard's small map panel:
 a dark map in the dashboard's colours, main roads in warm colours, unpaved tracks dashed in an
-earthy colour, paths dotted, and large labels with dark outlines ("halos").
+earthy colour, paths dotted, and large labels with dark outlines ("halos"). The light style has
+the same layers, widths and dashes with the colours of the LIGHT palette: cream land, pale green
+woods, white roads with warm grey outlines, dark labels with light halos.
 
 Zoom numbers in this file are dashboard tile zooms (256 pixel tiles, the zoom stored in the
 .pack files). MapLibre counts zoom for 512 pixel tiles, so the style file gets each number minus
@@ -14,10 +18,10 @@ one (function sz below): dashboard zoom 14 is style zoom 13.
 
 Run it after changing a colour or a width:
 
-    python3 tools/map/make_style.py           # rewrite the style file
-    python3 tools/map/make_style.py --check   # exit 1 if the style file is out of date
+    python3 tools/map/make_style.py           # rewrite both style files
+    python3 tools/map/make_style.py --check   # exit 1 if a style file is out of date
 
-tests/test_map_tools.py also checks that the committed style file matches this script.
+tests/test_map_tools.py also checks that the committed style files match this script.
 Python 3.9 compatible, standard library only.
 """
 from __future__ import annotations
@@ -30,6 +34,8 @@ from typing import Any, Dict, List
 
 STYLE_PATH = Path(__file__).resolve().parent / "style" / "montero-dark.json"
 STYLE_ID = "montero-dark"
+LIGHT_STYLE_PATH = STYLE_PATH.with_name("montero-light.json")
+LIGHT_STYLE_ID = "montero-light"
 
 # The only font tileserver-gl ships (in its tileserver-gl-styles package).
 FONT = ["Noto Sans Regular"]
@@ -78,7 +84,35 @@ PEAK = "#D9B98C"
 FUEL = ACCENT
 
 HALO = DASH_BG
+ROAD_NAME_MINOR = "#D9DEE2"
+ROAD_NAME_MAJOR = "#F1EBDD"
+VILLAGE_NAME = "#DCE1E5"
 NAME = ["coalesce", ["get", "name:latin"], ["get", "name"]]
+
+# Every colour name the layers use. The dark palette is the values above; the light palette gives
+# each the colour it has on the day map.
+PALETTE_NAMES = [
+    "DASH_BG", "TEXT", "TEXT_MUTED", "ACCENT", "COOL", "LAND", "WATER", "COAST", "FOREST", "WETLAND",
+    "SAND", "PARK_FILL", "PARK_LINE", "RESIDENTIAL", "INDUSTRIAL", "BUILDING", "RUNWAY", "MOTORWAY",
+    "TRUNK", "PRIMARY", "SECONDARY", "TERTIARY", "MINOR", "SERVICE", "TRACK", "UNPAVED", "PATH",
+    "RAIL", "FERRY", "CASING", "RIVER", "STREAM", "COUNTRY", "PROVINCE", "WATER_TEXT", "PEAK", "FUEL",
+    "HALO", "ROAD_NAME_MINOR", "ROAD_NAME_MAJOR", "VILLAGE_NAME",
+]
+DARK = {name: globals()[name] for name in PALETTE_NAMES}
+LIGHT = {
+    "DASH_BG": "#F4F2EA", "TEXT": "#2B3036", "TEXT_MUTED": "#5C6670", "ACCENT": "#C2410C",
+    "COOL": "#2F80C0", "LAND": "#F1EFE6", "WATER": "#A9D3EE", "COAST": "#7FB5D9",
+    "FOREST": "#D3E5C4", "WETLAND": "#D4E6E2", "SAND": "#EDE3C5", "PARK_FILL": "#B9DCA4",
+    "PARK_LINE": "#8DBA78", "RESIDENTIAL": "#E7E3DA", "INDUSTRIAL": "#E3DEE3", "BUILDING": "#D9D2C3",
+    "RUNWAY": "#C9C6BE", "MOTORWAY": "#F2A33A", "TRUNK": "#F7C46B", "PRIMARY": "#FAD98C",
+    "SECONDARY": "#FCEBB4", "TERTIARY": "#FFFFFF", "MINOR": "#FFFFFF", "SERVICE": "#DDD8CC",
+    "TRACK": "#A0692E", "UNPAVED": "#B08550", "PATH": "#8A8070", "RAIL": "#9A9A9A",
+    "FERRY": "#4A90C2", "CASING": "#B9AE9A", "RIVER": "#8EC3E6", "STREAM": "#A3CFEC",
+    "COUNTRY": "#9D7FC4", "PROVINCE": "#A2A8AE", "WATER_TEXT": "#3F7FAE", "PEAK": "#7A5F3E",
+    "FUEL": "#C2410C", "HALO": "#F7F5EF", "ROAD_NAME_MINOR": "#4A5560", "ROAD_NAME_MAJOR": "#3D3529",
+    "VILLAGE_NAME": "#353C44",
+}
+PALETTES = {"dark": DARK, "light": LIGHT}
 
 
 def sz(tile_zoom: float) -> float:
@@ -138,19 +172,20 @@ def text_paint(colour: str, halo: float = 1.8) -> Dict[str, Any]:
 
 
 # Road classes, drawn from least to most important so main roads end up on top.
-# Each entry: class names, first dashboard zoom, colour, widths per dashboard zoom, casing extra.
+# Each entry: class names, first dashboard zoom, colour name (looked up when the style is built),
+# widths per dashboard zoom, casing extra.
 ROADS = [
-    ("service", ["service"], 14, SERVICE, [(14, 0.8), (15, 1.6)], 0.0),
-    ("minor", ["minor"], 13, MINOR, [(13, 0.9), (14, 1.8), (15, 2.8)], 1.0),
-    ("tertiary", ["tertiary"], 11, TERTIARY,
+    ("service", ["service"], 14, "SERVICE", [(14, 0.8), (15, 1.6)], 0.0),
+    ("minor", ["minor"], 13, "MINOR", [(13, 0.9), (14, 1.8), (15, 2.8)], 1.0),
+    ("tertiary", ["tertiary"], 11, "TERTIARY",
      [(11, 0.7), (12, 1.2), (13, 1.8), (14, 2.8), (15, 4.0)], 1.2),
-    ("secondary", ["secondary"], 9, SECONDARY,
+    ("secondary", ["secondary"], 9, "SECONDARY",
      [(9, 0.6), (10, 1.0), (12, 1.8), (14, 3.4), (15, 4.8)], 1.4),
-    ("primary", ["primary"], 8, PRIMARY,
+    ("primary", ["primary"], 8, "PRIMARY",
      [(8, 0.7), (10, 1.4), (12, 2.2), (14, 4.0), (15, 5.6)], 1.6),
-    ("trunk", ["trunk"], 8, TRUNK,
+    ("trunk", ["trunk"], 8, "TRUNK",
      [(8, 0.9), (10, 1.6), (12, 2.6), (14, 4.6), (15, 6.4)], 1.8),
-    ("motorway", ["motorway"], 8, MOTORWAY,
+    ("motorway", ["motorway"], 8, "MOTORWAY",
      [(8, 1.0), (10, 1.8), (12, 2.8), (14, 5.0), (15, 7.0)], 1.8),
 ]
 
@@ -171,7 +206,7 @@ def road_layers() -> List[Dict[str, Any]]:
         out.append(layer("tunnel-" + name, "line", "transportation", first,
                          filt=["all", TUNNEL, is_class(*classes)],
                          layout={"line-cap": "butt", "line-join": "round"},
-                         paint={"line-color": colour, "line-width": ramp(widths),
+                         paint={"line-color": globals()[colour], "line-width": ramp(widths),
                                 "line-opacity": TUNNEL_OPACITY,
                                 "line-dasharray": [2, 1]}))
 
@@ -209,7 +244,7 @@ def road_layers() -> List[Dict[str, Any]]:
             out.append(layer("road-" + name, "line", "transportation", first,
                              filt=["all", NOT_TUNNEL, PAVED_OR_UNKNOWN, is_class(*classes)],
                              layout={"line-cap": "round", "line-join": "round"},
-                             paint={"line-color": colour, "line-width": ramp(widths)}))
+                             paint={"line-color": globals()[colour], "line-width": ramp(widths)}))
             out.append(layer("road-" + name + "-unpaved", "line", "transportation", first,
                              filt=["all", NOT_TUNNEL, UNPAVED_FILTER, is_class(*classes)],
                              layout={"line-cap": "butt", "line-join": "round"},
@@ -219,7 +254,7 @@ def road_layers() -> List[Dict[str, Any]]:
             out.append(layer("road-" + name, "line", "transportation", first,
                              filt=["all", NOT_TUNNEL, is_class(*classes)],
                              layout={"line-cap": "round", "line-join": "round"},
-                             paint={"line-color": colour, "line-width": ramp(widths)}))
+                             paint={"line-color": globals()[colour], "line-width": ramp(widths)}))
 
     out.append(layer("rail", "line", "transportation", 10,
                      filt=["all", NOT_TUNNEL, is_class("rail", "transit")],
@@ -308,13 +343,13 @@ def label_layers() -> List[Dict[str, Any]]:
               filt=is_class("tertiary", "minor", "service", "track"),
               layout=text_layout(12, **{"symbol-placement": "line", "symbol-spacing": 350,
                                        "text-max-angle": 30}),
-              paint=text_paint("#D9DEE2")),
+              paint=text_paint(ROAD_NAME_MINOR)),
         layer("road-name-major", "symbol", "transportation_name", 12,
               filt=is_class("motorway", "trunk", "primary", "secondary"),
               layout=text_layout(ramp([(12, 12), (15, 13)], 1.2),
                                  **{"symbol-placement": "line", "symbol-spacing": 400,
                                     "text-max-angle": 30}),
-              paint=text_paint("#F1EBDD")),
+              paint=text_paint(ROAD_NAME_MAJOR)),
         layer("fuel", "circle", "poi", 14, filt=is_class("fuel"),
               paint={"circle-color": FUEL, "circle-radius": ramp([(14, 3), (15, 4)]),
                      "circle-stroke-color": HALO, "circle-stroke-width": 1.2}),
@@ -343,7 +378,7 @@ def label_layers() -> List[Dict[str, Any]]:
         layer("place-village", "symbol", "place", 12, filt=is_class("village"),
               layout=text_layout(ramp([(12, 12), (15, 14)], 1.2),
                                  **{"symbol-sort-key": ["get", "rank"]}),
-              paint=text_paint("#DCE1E5")),
+              paint=text_paint(VILLAGE_NAME)),
         layer("place-town", "symbol", "place", 10, filt=is_class("town"),
               layout=text_layout(ramp([(10, 12.5), (15, 16)], 1.2),
                                  **{"symbol-sort-key": ["get", "rank"]}),
@@ -358,11 +393,18 @@ def label_layers() -> List[Dict[str, Any]]:
     ]
 
 
-def build_style() -> Dict[str, Any]:
-    layers = area_layers() + road_layers() + boundary_layers() + label_layers()
+def build_style(palette: str = "dark") -> Dict[str, Any]:
+    """The style with the colours of one palette ("dark" or "light"). The layer functions read the
+    colour names as module globals, so they are set to the palette while the layers are built."""
+    saved = {name: globals()[name] for name in PALETTE_NAMES}
+    globals().update(PALETTES[palette])
+    try:
+        layers = area_layers() + road_layers() + boundary_layers() + label_layers()
+    finally:
+        globals().update(saved)
     return {
         "version": 8,
-        "name": "Montero dark",
+        "name": "Montero " + palette,
         "metadata": {
             "montero:note": "Written for the OpenMapTiles schema by tools/map/make_style.py. "
                             "Style zoom = dashboard tile zoom - 1 (256 pixel tiles).",
@@ -379,8 +421,11 @@ def build_style() -> Dict[str, Any]:
     }
 
 
-def render() -> str:
-    return json.dumps(build_style(), indent=1, ensure_ascii=False) + "\n"
+def render(palette: str = "dark") -> str:
+    return json.dumps(build_style(palette), indent=1, ensure_ascii=False) + "\n"
+
+
+STYLE_FILES = [("dark", STYLE_PATH), ("light", LIGHT_STYLE_PATH)]
 
 
 def main(argv: List[str] = None) -> int:
@@ -388,17 +433,19 @@ def main(argv: List[str] = None) -> int:
     parser.add_argument("--check", action="store_true",
                         help="only check that the style file is up to date")
     args = parser.parse_args(argv)
-    text = render()
-    if args.check:
-        current = STYLE_PATH.read_text(encoding="utf-8") if STYLE_PATH.exists() else ""
-        if current != text:
-            print("%s is out of date; run python3 tools/map/make_style.py" % STYLE_PATH)
-            return 1
-        return 0
-    STYLE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    STYLE_PATH.write_text(text, encoding="utf-8")
-    print("wrote %s (%d layers)" % (STYLE_PATH, len(build_style()["layers"])))
-    return 0
+    stale = 0
+    for palette, path in STYLE_FILES:
+        text = render(palette)
+        if args.check:
+            current = path.read_text(encoding="utf-8") if path.exists() else ""
+            if current != text:
+                print("%s is out of date; run python3 tools/map/make_style.py" % path)
+                stale = 1
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        print("wrote %s (%d layers)" % (path, len(build_style(palette)["layers"])))
+    return stale
 
 
 if __name__ == "__main__":

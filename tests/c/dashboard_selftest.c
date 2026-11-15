@@ -288,6 +288,8 @@ static int g_calls, g_bad;
 
 static void rec_fill(void *ctx, int x, int y, int w, int h, unsigned rgb) { g_calls++; if (w < 0 || h < 0) g_bad++; }
 static void rec_round(void *ctx, int x, int y, int w, int h, int r, unsigned f, unsigned b) { g_calls++; }
+static DPoint g_curve[256]; /* the elevation graph's curve, as last drawn */
+static int g_curve_n;
 static void rec_poly(void *ctx, const DPoint *p, int n, int w, unsigned rgb)
 {
     int i;
@@ -295,6 +297,10 @@ static void rec_poly(void *ctx, const DPoint *p, int n, int w, unsigned rgb)
     for (i = 0; i < n; i++)
         if (p[i].x < 0 || p[i].x > SCREEN_W || p[i].y < 0 || p[i].y > SCREEN_H)
             g_bad++;
+    if (w == 2 && n >= 2 && n <= 256 && p[0].x == 20 && p[0].y >= 300 && p[0].y <= 370) {
+        memcpy(g_curve, p, (size_t)n * sizeof *p);
+        g_curve_n = n;
+    }
 }
 static void rec_polygon(void *ctx, const DPoint *p, int n, unsigned f) { rec_poly(ctx, p, n, 1, f); }
 static unsigned g_circle_fill; /* fill of the last circle drawn (the map marker comes last) */
@@ -315,7 +321,17 @@ static void rec_text(void *ctx, int x, int baseline, int font, unsigned rgb, con
     }
 }
 
-static const Canvas g_rec = {NULL, rec_fill, rec_round, rec_poly, rec_polygon, rec_circle, rec_width, rec_text, NULL};
+static int g_glass_calls;
+static void rec_glass(void *ctx, int x, int y, int w, int h, int r, unsigned rgb, int alpha)
+{
+    g_calls++;
+    g_glass_calls++;
+    if (x < 0 || y < 0 || x + w > SCREEN_W || y + h > SCREEN_H || alpha <= 0 || alpha > 256 || 2 * r > h)
+        g_bad++;
+}
+
+static const Canvas g_rec = {NULL, rec_fill, rec_round, rec_poly, rec_polygon, rec_circle, rec_width, rec_text, NULL,
+                             rec_glass};
 
 static int g_map_calls, g_map_zoom;
 static int rec_map(void *ctx, int x, int y, int w, int h, int zoom, double px, double py, int night)
@@ -354,8 +370,8 @@ static void test_speed_and_map(void)
     render_dashboard(&with_map, &m);        /* no map files yet */
     CHECK(g_bad == 0 && g_map_calls == 0 && strstr(g_texts, "No map files") != NULL);
     CHECK(strstr(g_texts, "|SPEED|") == NULL); /* labels are drawn letter by letter */
-    CHECK(strstr(g_texts, "Last 10 min") && strstr(g_texts, "|Avg|") && strstr(g_texts, "|Top|"));
-    CHECK(strstr(g_texts, "|36|Top|") != NULL);  /* top speed 36 */
+    CHECK(strstr(g_texts, "|A|V|G|T|O|P|") != NULL);
+    CHECK(strstr(g_texts, "|36|36|") != NULL);   /* average and top speed 36 */
 
     m.map_min_zoom = 8;
     m.map_max_zoom = 15;
@@ -367,16 +383,18 @@ static void test_speed_and_map(void)
     render_dashboard(&with_map, &m);
     CHECK(g_bad == 0 && g_map_calls == 1 && g_map_zoom == 14);
     CHECK(strstr(g_texts, "North up") == NULL && strstr(g_texts, "\xC2\xA9 OpenStreetMap")); /* no title */
-    CHECK(strstr(g_texts, "|200 m|") != NULL); /* London at zoom 14: about 6 m per pixel */
-    CHECK(render_map_hit(759, 80) == MAPHIT_ZOOM_IN);  /* 6 px in from the tile's top right */
-    CHECK(render_map_hit(759, 130) == MAPHIT_ZOOM_OUT);
-    CHECK(render_map_hit(600, 200) == MAPHIT_NONE && render_map_hit(752, 300) == MAPHIT_NONE);
+    CHECK(strstr(g_texts, "|300 m|") != NULL); /* London at zoom 14: about 6 m per pixel */
+    CHECK(strstr(g_texts, "|N|") != NULL);     /* north up */
+    CHECK(render_map_hit(490, 448) == MAPHIT_ZOOM_IN);  /* bottom centre: minus | plus */
+    CHECK(render_map_hit(440, 448) == MAPHIT_ZOOM_OUT);
+    CHECK(render_map_hit(400, 260) == MAPHIT_NONE && render_map_hit(520, 448) == MAPHIT_NONE);
+    CHECK(render_map_hit(490, 420) == MAPHIT_NONE);
 
     in.gps_fresh = 0;                       /* GPS lost: the last position stays on the map */
     step(1);
     g_texts[0] = '\0';
     render_dashboard(&with_map, &m);
-    CHECK(g_map_calls == 2 && g_circle_fill == 0xA3ADB7); /* the marker turns grey (muted) */
+    CHECK(g_map_calls == 2 && g_circle_fill == 0x4B5763); /* the marker turns grey (day: muted) */
 
     dash_init(&m);                          /* map files but no position yet */
     m.map_min_zoom = 8;
@@ -422,7 +440,7 @@ static void test_address_and_graphs(void)
     strcpy(m.addr_place, "Cupang");
     g_texts[0] = '\0';
     render_dashboard(&g_rec, &m);
-    CHECK(strstr(g_texts, "|Sumulong Highway|Brgy. San Isidro|Antipolo, Rizal|") != NULL);
+    CHECK(strstr(g_texts, "|Sumulong Highway|Brgy. San Isidro \xC2\xB7 Antipolo, Rizal|") != NULL);
     CHECK(strstr(g_texts, "Last GPS position") == NULL);
 
     m.addr_road[0] = 0;                     /* no road, a numbered barangay, no city */
@@ -430,11 +448,11 @@ static void test_address_and_graphs(void)
     m.addr_city[0] = 0;
     g_texts[0] = '\0';
     render_dashboard(&g_rec, &m);
-    CHECK(strstr(g_texts, "|No named road nearby|Barangay 649|Rizal|") != NULL);
+    CHECK(strstr(g_texts, "|No named road nearby|Barangay 649 \xC2\xB7 Rizal|") != NULL);
     m.addr_barangay[0] = 0;                 /* no barangay: the nearest place */
     g_texts[0] = '\0';
     render_dashboard(&g_rec, &m);
-    CHECK(strstr(g_texts, "|Near Cupang|") != NULL);
+    CHECK(strstr(g_texts, "|Near Cupang \xC2\xB7 Rizal|") != NULL);
 
     memset(long_road, 'W', sizeof long_road - 1); /* too wide: cut with an ellipsis */
     long_road[sizeof long_road - 1] = 0;
@@ -451,6 +469,72 @@ static void test_address_and_graphs(void)
     CHECK(strstr(g_texts, "Last GPS position") != NULL);
 }
 
+/* Dark colours from sunset to sunrise; the headlights decide only before GPS time and position. */
+static void test_colours(void)
+{
+    reset();
+    in.lights_on = 1;                       /* headlights on at noon: still day colours */
+    step(1);
+    CHECK(!m.night && m.night_src == SRC_GPS && m.lights_on);
+    g_texts[0] = '\0';
+    render_dashboard(&g_rec, &m);
+    CHECK(strstr(g_texts, "Headlights on") != NULL);
+
+    reset();                                /* 16:30 in London in December: after sunset */
+    in.hour = 16; in.minute = 30; in.gps.utc_seconds = 16 * 3600 + 30 * 60;
+    step(1);
+    CHECK(m.night && m.night_src == SRC_GPS && !m.lights_on);
+    g_texts[0] = '\0';
+    render_dashboard(&g_rec, &m);
+    CHECK(strstr(g_texts, "Sunrise 08:") != NULL && strstr(g_texts, "Headlights on") == NULL);
+
+    reset();                                /* 06:00: before sunrise */
+    in.hour = 6; in.gps.utc_seconds = 6 * 3600;
+    step(1);
+    CHECK(m.night && m.night_src == SRC_GPS);
+
+    reset();                                /* no position yet: the headlights decide */
+    in.gps.have_position = 0;
+    step(1);
+    CHECK(!m.night && m.night_src == SRC_CAR);
+    in.lights_on = 1;
+    step(1);
+    CHECK(m.night && m.night_src == SRC_CAR);
+    in.gps.have_position = 1;               /* the first fix: the sun from now on */
+    step(1);
+    CHECK(!m.night && m.night_src == SRC_GPS);
+}
+
+/* The elevation graph is a smooth curve that follows the data without overshooting it. */
+static void test_smooth_graph(void)
+{
+    int i, rising = 1, lo = 1000, hi = 0;
+
+    reset();
+    step(1);
+    series_init(&m.elevation, ELEVATION_POINTS);
+    for (i = 0; i < ELEVATION_POINTS; i++)   /* steadily up, with a wobble */
+        series_push(&m.elevation, 500.0f + 4.0f * i + (i % 2 ? 3.0f : 0.0f), (unsigned)i);
+    g_curve_n = 0;
+    render_dashboard(&g_rec, &m);
+    CHECK(g_curve_n > 20);                   /* many short pieces: a curve, not a line per sample */
+    for (i = 1; i < g_curve_n; i++)
+        if (g_curve[i].y > g_curve[i - 1].y || g_curve[i].x < g_curve[i - 1].x)
+            rising = 0;
+    CHECK(rising && g_curve[0].x == 20 && g_curve[g_curve_n - 1].x == 132);
+
+    series_init(&m.elevation, ELEVATION_POINTS);
+    for (i = 0; i < ELEVATION_POINTS; i++)   /* a single peak in the middle */
+        series_push(&m.elevation, 900.0f - (float)((i - 40) * (i - 40)), (unsigned)i);
+    g_curve_n = 0;
+    render_dashboard(&g_rec, &m);
+    for (i = 0; i < g_curve_n; i++) {
+        if (g_curve[i].y < lo) lo = g_curve[i].y;
+        if (g_curve[i].y > hi) hi = g_curve[i].y;
+    }
+    CHECK(g_curve_n > 20 && lo >= 310 && hi <= 361); /* never above the peak or below the lowest value */
+}
+
 static void test_render(void)
 {
     reset();
@@ -459,12 +543,12 @@ static void test_render(void)
     g_texts[0] = '\0';
     g_calls = g_bad = 0;
     render_dashboard(&g_rec, &m);
-    CHECK(g_calls > 100 && g_bad == 0);
-    CHECK(strstr(g_texts, "|42|km/h|") != NULL);
+    CHECK(g_calls > 100 && g_bad == 0 && g_glass_calls >= 10);
+    CHECK(strstr(g_texts, "|km/h|42|") != NULL);
     CHECK(strstr(g_texts, "|279|m|") != NULL);
     CHECK(strstr(g_texts, "|988|hPa|") != NULL);
     CHECK(strstr(g_texts, "|14.0|V|") != NULL);
-    CHECK(strstr(g_texts, "|127\xC2\xB0|SE|") != NULL);
+    CHECK(strstr(g_texts, "|SE|127\xC2\xB0|") != NULL && strstr(g_texts, "GPS course") != NULL);
     CHECK(strstr(g_texts, "Sunset 15:5") != NULL);
     CHECK(strstr(g_texts, "GPS 9 sats") != NULL);
     CHECK(strstr(g_texts, "No car data") == NULL && strstr(g_texts, "Headlights on") == NULL);
@@ -478,18 +562,24 @@ static void test_render(void)
     render_dashboard(&g_rec, &m);
     CHECK(g_bad == 0);
     CHECK(strstr(g_texts, "No GPS fix") && strstr(g_texts, "No car data") && strstr(g_texts, "Headlights on"));
-    CHECK(strstr(g_texts, "|--|km/h|") != NULL);
+    CHECK(strstr(g_texts, "|km/h|--|") != NULL);
 
-    in.car_fresh = 1;                       /* wide fallback font: short note instead of overlapping */
+    in.car_fresh = 1;                       /* the car's sensor: named, shortened when it does not fit */
     step(1);
     CHECK(m.elev_src == SRC_CAR);
+    g_width_percent = 30;
     g_texts[0] = '\0';
     render_dashboard(&g_rec, &m);
-    CHECK(strstr(g_texts, "Car sensor, last 20 km") != NULL);
-    g_width_percent = 70;
+    CHECK(strstr(g_texts, "|Car sensor|") != NULL && strstr(g_texts, "20 km") == NULL);
+    g_width_percent = 50;
     g_texts[0] = '\0';
     render_dashboard(&g_rec, &m);
-    CHECK(strstr(g_texts, "Car sensor, last 20 km") == NULL && strstr(g_texts, "|Car sensor|") != NULL);
+    CHECK(strstr(g_texts, "|Car sensor|") == NULL && strstr(g_texts, "|Car|") != NULL);
+    CHECK(strstr(g_texts, "Car compass") != NULL);
+    g_width_percent = 200;                  /* very wide fallback font: the note is left out */
+    g_texts[0] = '\0';
+    render_dashboard(&g_rec, &m);
+    CHECK(strstr(g_texts, "|Car|") == NULL);
     g_width_percent = 50;
 
     dash_init(&m);                          /* nothing at all yet */
@@ -520,6 +610,8 @@ int main(void)
     test_climb();
     test_clock();
     test_sun();
+    test_colours();
+    test_smooth_graph();
     test_render();
     test_speed_and_map();
     test_address_and_graphs();
