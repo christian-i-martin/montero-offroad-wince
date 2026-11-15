@@ -31,6 +31,8 @@ enum { SRC_NONE, SRC_GPS, SRC_CAR };
 enum { BATT_UNKNOWN, BATT_CHARGING, BATT_NOT_CHARGING, BATT_LOW, BATT_HIGH };
 enum { WEATHER_UNKNOWN, WEATHER_FALLING_FAST, WEATHER_FALLING, WEATHER_STEADY, WEATHER_RISING };
 enum { SUN_NONE, SUN_SUNSET, SUN_SUNRISE };
+enum { ADDRESS_NO_FILE, ADDRESS_WAITING, ADDRESS_OUTSIDE, ADDRESS_OK, ADDRESS_UNREADABLE };
+#define ADDRESS_TEXT 96
 
 /* Sampling: pressure every 30 s (1 h shown), outside temperature every 90 s (3 h), battery every
  * 15 s (30 min), elevation every 250 m driven (20 km), sea-level pressure every 90 s (3 h). */
@@ -83,6 +85,14 @@ typedef struct {
     /* map view, set by the program (dash.c), not by dash_update: zoom level shown and the range
      * the map files hold (map_max_zoom < 0 when there are no map files) */
     int map_zoom, map_min_zoom, map_max_zoom;
+
+    /* address, set by the program (dash.c) from the address file; UTF-8, empty when unknown.
+     * For the screen only: never log it (it is as revealing as the position). */
+    int address_state;                /* ADDRESS_NO_FILE until the program finds an address file;
+                                       * ADDRESS_UNREADABLE when *.addr files exist but none opens */
+    char addr_road[ADDRESS_TEXT], addr_barangay[ADDRESS_TEXT], addr_city[ADDRESS_TEXT];
+    char addr_province[ADDRESS_TEXT], addr_place[ADDRESS_TEXT];
+    int addr_road_m, addr_place_m;    /* metres, -1 without a name */
 
     /* internal */
     int started;

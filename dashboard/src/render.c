@@ -27,6 +27,7 @@ const FontSpec render_fonts[FONT_COUNT] = {
     {15, FACE_SEMIBOLD},  /* FONT_DIR_SMALL */
     {21, FACE_CONDENSED}, /* FONT_ROSE */
     {19, FACE_SEMIBOLD},  /* FONT_MENU */
+    {21, FACE_SEMIBOLD},  /* FONT_ADDR: the road name */
 };
 
 typedef struct { unsigned bg, panel, line, text, muted, accent, cool, warn, area, button; } Theme;
@@ -245,12 +246,13 @@ static void trend_right(const Canvas *c, int right, int baseline, int min_x, uns
 }
 
 /* Line graph of a series. Time series are placed by age over window_ms (newest at the right
- * edge); by_index series are evenly spaced per sample. The value range is at least min_span;
- * from_zero graphs start at 0 (speed). */
+ * edge); by_index series are evenly spaced per sample. The first value is drawn flat from the
+ * left edge, so the graph fills its width from the first sample on. The value range is at least
+ * min_span; from_zero graphs start at 0 (speed). */
 static void chart(const Canvas *c, const Theme *t, const Series *s, Box b, unsigned now, unsigned window_ms,
                   float min_span, unsigned rgb, int area, int by_index, int from_zero)
 {
-    DPoint p[SERIES_MAX + 2];
+    DPoint p[SERIES_MAX + 3];
     float v, lo = 0, hi = 0;
     unsigned tick;
     int i, n = 0, used = 0, bottom = b.y + b.h - 1;
@@ -264,7 +266,7 @@ static void chart(const Canvas *c, const Theme *t, const Series *s, Box b, unsig
         used++;
     }
     c->fill_rect(c->ctx, b.x, bottom, b.w, 1, t->line);
-    if (used < 2) {
+    if (used == 0) {
         const char *msg = "Collecting data";
         text(c, b.x + (b.w - tw(c, FONT_SMALL, msg)) / 2, b.y + b.h / 2 + 4, FONT_SMALL, t->muted, msg);
         return;
@@ -278,7 +280,7 @@ static void chart(const Canvas *c, const Theme *t, const Series *s, Box b, unsig
         lo = mid - min_span / 2.0f;
         hi = mid + min_span / 2.0f;
     }
-    n = 1; /* p[0] is the area's first corner */
+    n = 2; /* p[0]: the area's first corner, p[1]: the first value at the left edge */
     for (i = 0; i < s->count; i++) {
         series_get(s, i, &v, &tick);
         if (!by_index && now - tick > window_ms)
@@ -288,8 +290,10 @@ static void chart(const Canvas *c, const Theme *t, const Series *s, Box b, unsig
         p[n].y = b.y + 3 + iround((hi - v) / (hi - lo) * (b.h - 7));
         n++;
     }
+    p[1].x = b.x;
+    p[1].y = p[2].y;
     if (area) {
-        p[0].x = p[1].x;
+        p[0].x = b.x;
         p[0].y = bottom;
         p[n].x = p[n - 1].x;
         p[n].y = bottom;
@@ -473,62 +477,63 @@ static void rose_point(int cx, int cy, double r, double screen_deg, int *x, int 
     *y = cy - iround(r * cos(a));
 }
 
-static void draw_rose(const Canvas *c, const Theme *t, int cx, int cy, float heading)
+/* Compass rose of radius r (designed at 80 px; everything scales), turned so the heading is up. */
+static void draw_rose(const Canvas *c, const Theme *t, int cx, int cy, int r, float heading)
 {
     static const char *const letters[4] = {"N", "E", "S", "W"};
+    double k = r / 80.0;
+    int font = r < 70 ? FONT_DIR_SMALL : FONT_ROSE, drop = r < 70 ? 5 : 8;
     DPoint p[4];
     int i, x1, y1, x2, y2;
 
-    c->circle(c->ctx, cx, cy, 80, t->bg, t->line, 2);
+    c->circle(c->ctx, cx, cy, r, t->bg, t->line, 2);
     for (i = 0; i < 36; i++) {
         double a = i * 10.0 - heading;
-        rose_point(cx, cy, 78, a, &x1, &y1);
-        rose_point(cx, cy, i % 3 == 0 ? 67 : 73, a, &x2, &y2);
+        rose_point(cx, cy, 78 * k, a, &x1, &y1);
+        rose_point(cx, cy, (i % 3 == 0 ? 67 : 73) * k, a, &x2, &y2);
         line(c, x1, y1, x2, y2, 2, t->muted);
     }
     for (i = 0; i < 4; i++) {
-        rose_point(cx, cy, 48, i * 90.0 - heading, &x1, &y1);
-        text(c, x1 - tw(c, FONT_ROSE, letters[i]) / 2, y1 + 8, FONT_ROSE, i == 0 ? t->accent : t->text, letters[i]);
+        rose_point(cx, cy, 48 * k, i * 90.0 - heading, &x1, &y1);
+        text(c, x1 - tw(c, font, letters[i]) / 2, y1 + drop, font, i == 0 ? t->accent : t->text, letters[i]);
     }
     /* the car, pointing up */
-    p[0].x = cx; p[0].y = cy - 17;
-    p[1].x = cx + 11; p[1].y = cy + 14;
-    p[2].x = cx; p[2].y = cy + 7;
-    p[3].x = cx - 11; p[3].y = cy + 14;
+    p[0].x = cx; p[0].y = cy - iround(17 * k);
+    p[1].x = cx + iround(11 * k); p[1].y = cy + iround(14 * k);
+    p[2].x = cx; p[2].y = cy + iround(7 * k);
+    p[3].x = cx - iround(11 * k); p[3].y = cy + iround(14 * k);
     c->polygon(c->ctx, p, 4, t->text);
     /* fixed mark at the top */
-    p[0].x = cx - 8; p[0].y = cy - 84;
-    p[1].x = cx + 8; p[1].y = cy - 84;
-    p[2].x = cx; p[2].y = cy - 70;
+    p[0].x = cx - iround(8 * k); p[0].y = cy - iround(84 * k);
+    p[1].x = cx + iround(8 * k); p[1].y = cy - iround(84 * k);
+    p[2].x = cx; p[2].y = cy - iround(70 * k);
     c->polygon(c->ctx, p, 3, t->accent);
 }
 
+/* One row: the rose on the left, the heading in degrees (or the car's 8 points) on the right. */
 static void draw_heading(const Canvas *c, const Theme *t, const DashModel *m, int x, int y, int w, int h)
 {
     char big[16];
-    const char *dir = "";
-    int dir_font = FONT_DIR, total, start, cx = x + w / 2;
-    unsigned dir_rgb = t->accent;
+    const char *dir = "", *note = "No heading yet";
+    int r = (h - 22) / 2, cx = x + 14 + r, rx = cx + r + 22, baseline = y + h / 2 + 17;
 
     tile(c, t, x, y, w, h);
-    tile_header(c, t, x, y, w, "HEADING", m->heading_src == SRC_GPS ? "GPS" : m->heading_src == SRC_CAR ? "Car compass" : "",
-                t->muted);
-    draw_rose(c, t, cx, y + 115, m->heading_src == SRC_NONE ? 0.0f : m->heading_deg);
+    draw_rose(c, t, cx, y + h / 2, r, m->heading_src == SRC_NONE ? 0.0f : m->heading_deg);
+    label(c, rx, y + 24, t->muted, "HEADING");
     if (m->heading_src == SRC_GPS) {
         snprintf(big, sizeof big, "%d" DEG, iround(m->heading_deg) % 360);
         dir = dash_point_name(m->heading_deg);
+        note = "GPS course";
     } else if (m->heading_src == SRC_CAR) {
         snprintf(big, sizeof big, "%s", dash_point_name(m->heading_deg));
-        dir = "8-point";
-        dir_font = FONT_DIR_SMALL;
-        dir_rgb = t->muted;
+        note = "Car compass, 8 points";
     } else {
         strcpy(big, "--");
     }
-    total = tw(c, FONT_HEADING, big) + (*dir ? 10 + tw(c, dir_font, dir) : 0);
-    start = cx - total / 2;
-    text(c, start, y + h - 17, FONT_HEADING, t->text, big);
-    text(c, start + tw(c, FONT_HEADING, big) + 10, y + h - 17, dir_font, dir_rgb, dir);
+    text(c, rx, baseline, FONT_HEADING, t->text, big);
+    text(c, rx + tw(c, FONT_HEADING, big) + 10, baseline, FONT_DIR, t->accent, dir);
+    if (rx + tw(c, FONT_SMALL, note) <= x + w - 12)
+        text(c, rx, y + h - 17, FONT_SMALL, t->muted, note);
 }
 
 static void draw_battery(const Canvas *c, const Theme *t, const DashModel *m, int x, int y, int w, int h)
@@ -762,6 +767,94 @@ int render_map_hit(int x, int y)
     return MAPHIT_NONE;
 }
 
+/* ---------------------------------------------------------------- address */
+
+/* s cut to max_w with an ellipsis when it is wider (whole UTF-8 characters only). */
+static void fit_text(const Canvas *c, int font, const char *s, int max_w, char *out, int size)
+{
+    int n;
+    snprintf(out, (size_t)size, "%s", s);
+    if (tw(c, font, out) <= max_w)
+        return;
+    n = (int)strlen(out);
+    while (n > 0) {
+        do
+            n--;
+        while (n > 0 && ((unsigned char)out[n] & 0xC0) == 0x80);
+        if (n + 4 > size)
+            continue;
+        out[n] = (char)0xE2; /* the ellipsis character, in place */
+        out[n + 1] = (char)0x80;
+        out[n + 2] = (char)0xA6;
+        out[n + 3] = 0;
+        if (tw(c, font, out) <= max_w)
+            return;
+    }
+    out[0] = 0;
+}
+
+static void fitted(const Canvas *c, int x, int baseline, int font, unsigned rgb, int max_w, const char *s)
+{
+    char buf[ADDRESS_TEXT + 8];
+    fit_text(c, font, s, max_w, buf, sizeof buf);
+    text(c, x, baseline, font, rgb, buf);
+}
+
+/* Nearest named road, then the barangay (or the nearest named place), then city and province,
+ * from the address file (OpenStreetMap data). */
+static void draw_address(const Canvas *c, const Theme *t, const DashModel *m, int x, int y, int w, int h)
+{
+    char buf[2 * ADDRESS_TEXT + 8];
+    int sx = x + 17, max_w = w - 34;
+    Box b;
+
+    tile(c, t, x, y, w, h);
+    if (m->have_position && !m->gps_ok && m->address_state == ADDRESS_OK)
+        tile_header(c, t, x, y, w, "ADDRESS", "Last GPS position", t->text);
+    else
+        tile_header(c, t, x, y, w, "ADDRESS", NULL, t->muted);
+    b.x = x; b.y = y; b.w = w; b.h = h;
+    if (m->address_state == ADDRESS_NO_FILE) {
+        centred(c, &b, y + 66, FONT_HEADER, t->text, "No address file");
+        centred(c, &b, y + 88, FONT_SMALL, t->muted, "Copy luzon.addr into the Map folder");
+        return;
+    }
+    if (m->address_state == ADDRESS_UNREADABLE) {
+        centred(c, &b, y + 66, FONT_HEADER, t->text, "Address file cannot be read");
+        centred(c, &b, y + 88, FONT_SMALL, t->muted, "Copy luzon.addr again");
+        return;
+    }
+    if (m->address_state == ADDRESS_WAITING || !m->have_position) {
+        centred(c, &b, y + 74, FONT_HEADER, t->muted, "Waiting for GPS");
+        return;
+    }
+    if (m->address_state == ADDRESS_OUTSIDE) {
+        centred(c, &b, y + 74, FONT_HEADER, t->muted, "Outside the address area");
+        return;
+    }
+    if (m->addr_road[0])
+        fitted(c, sx, y + 58, FONT_ADDR, t->text, max_w, m->addr_road);
+    else
+        fitted(c, sx, y + 58, FONT_HEADER, t->muted, max_w, "No named road nearby");
+    buf[0] = 0;
+    if (m->addr_barangay[0]) {
+        if (strncmp(m->addr_barangay, "Barangay", 8) == 0 || strncmp(m->addr_barangay, "Brgy", 4) == 0)
+            snprintf(buf, sizeof buf, "%s", m->addr_barangay);
+        else
+            snprintf(buf, sizeof buf, "Brgy. %s", m->addr_barangay);
+    } else if (m->addr_place[0]) {
+        snprintf(buf, sizeof buf, "Near %s", m->addr_place);
+    }
+    if (buf[0])
+        fitted(c, sx, y + 86, FONT_HEADER, t->text, max_w, buf);
+    if (m->addr_city[0] && m->addr_province[0] && strcmp(m->addr_city, m->addr_province) != 0)
+        snprintf(buf, sizeof buf, "%s, %s", m->addr_city, m->addr_province);
+    else
+        snprintf(buf, sizeof buf, "%s", m->addr_city[0] ? m->addr_city : m->addr_province);
+    if (buf[0])
+        fitted(c, sx, y + 110, FONT_HEADER, t->muted, max_w, buf);
+}
+
 void render_dashboard(const Canvas *c, const DashModel *m)
 {
     const Theme *t = m->night ? &g_night : &g_day;
@@ -771,10 +864,11 @@ void render_dashboard(const Canvas *c, const DashModel *m)
     draw_outside(c, t, m, COL_X[0], ROW_Y[0], COL_W[0], ROW_H[0]);
     draw_pressure(c, t, m, COL_X[0], ROW_Y[1], COL_W[0], ROW_H[1]);
     draw_battery(c, t, m, COL_X[0], ROW_Y[2], COL_W[0], ROW_H[2]);
-    draw_heading(c, t, m, COL_X[1], ROW_Y[0], COL_W[1], ROW_Y[1] + ROW_H[1] - ROW_Y[0]);
+    draw_heading(c, t, m, COL_X[1], ROW_Y[0], COL_W[1], ROW_H[0]);
+    draw_elevation(c, t, m, COL_X[1], ROW_Y[1], COL_W[1], ROW_H[1]);
     draw_speed(c, t, m, COL_X[1], ROW_Y[2], COL_W[1], ROW_H[2]);
     draw_map(c, t, m, COL_X[2], ROW_Y[0], COL_W[2], ROW_Y[1] + ROW_H[1] - ROW_Y[0]);
-    draw_elevation(c, t, m, COL_X[2], ROW_Y[2], COL_W[2], ROW_H[2]);
+    draw_address(c, t, m, COL_X[2], ROW_Y[2], COL_W[2], ROW_H[2]);
 }
 
 /* ---------------------------------------------------------------- maintenance menu */

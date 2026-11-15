@@ -7,6 +7,8 @@
  *             posts the factory Car Info screen's read requests with sender 0x14 every 5 s
  *   lights    window message 0x52A index 9 broadcast by Main.exe, and CarInfo frame 0x33
  *   map       *.pack files in the Map folder at the SD card root (tools/map/), opened read-only
+ *   address   the *.addr file in the same folder (tools/address/), read-only, looked up on its own
+ *             thread; shown on screen only, never logged
  * Main.exe shows and hides this program by its window title "GPS - Navigation" (SP_MAIN.ini).
  * Hold the clock for 2 seconds for the menu (file manager, close).
  * Never sends EndCommunication (81 01 00), 0x6D1 or 0x6D4; never writes to vehicle ports.
@@ -19,13 +21,14 @@
 
 #include "busring.h"
 #include "carinfo.h"
+#include "addr.h"
 #include "map.h"
 #include "model.h"
 #include "nmea.h"
 #include "render.h"
 #include "sun.h"
 
-#define DASH_VERSION "0.2.0"
+#define DASH_VERSION "0.3.0"
 #define WINDOW_CLASS L"MonteroDashboard"
 #define WINDOW_TITLE L"GPS - Navigation" /* SP_MAIN.ini [NAVIGATION] TITLE */
 
@@ -641,13 +644,13 @@ static void gdi_round_rect(void *ctx, int x, int y, int w, int h, int radius, un
 static void gdi_polyline(void *ctx, const DPoint *pts, int n, int width, unsigned rgb)
 {
     HDC dc = (HDC)ctx;
-    POINT p[SERIES_MAX + 2];
+    POINT p[SERIES_MAX + 4];
     HPEN pen;
     HGDIOBJ old;
     int i;
     if (n < 2 || !g_gdi.polyline)
         return;
-    for (i = 0; i < n && i < SERIES_MAX + 2; i++) {
+    for (i = 0; i < n && i < SERIES_MAX + 4; i++) {
         p[i].x = pts[i].x;
         p[i].y = pts[i].y;
     }
@@ -661,7 +664,7 @@ static void gdi_polyline(void *ctx, const DPoint *pts, int n, int width, unsigne
 static void gdi_polygon(void *ctx, const DPoint *pts, int n, unsigned fill)
 {
     HDC dc = (HDC)ctx;
-    POINT p[SERIES_MAX + 2];
+    POINT p[SERIES_MAX + 4];
     HBRUSH b;
     HGDIOBJ ob, op;
     int i;
@@ -671,7 +674,7 @@ static void gdi_polygon(void *ctx, const DPoint *pts, int n, unsigned fill)
         gdi_polyline(ctx, pts, n, 1, fill);
         return;
     }
-    for (i = 0; i < n && i < SERIES_MAX + 2; i++) {
+    for (i = 0; i < n && i < SERIES_MAX + 4; i++) {
         p[i].x = pts[i].x;
         p[i].y = pts[i].y;
     }
@@ -776,19 +779,19 @@ static int file_read_at(void *file, unsigned offset, void *buffer, unsigned size
     return (int)got;
 }
 
-static void map_open(void)
+/* Names starting with a dot are skipped. When a Mac copies files to the FAT card, it adds a small
+ * "._name" side file next to each one (macOS keeps file details there), which matches "*.pack" and
+ * "*.addr" too but is not a map or address file. */
+static int hidden_name(const WCHAR *name)
 {
-    WCHAR root[MAX_PATH], folder[MAX_PATH], path[MAX_PATH], *slash;
-    WIN32_FIND_DATAW found;
-    HANDLE find;
-    int bad = 0;
+    return name[0] == L'.';
+}
 
-    if (!map_init(&g_map, 12)) {
-        log_line("[map] not enough memory for the map");
-        return;
-    }
-    g_map_ok = 1;
-    wcscpy(root, g_dir); /* "\SD\Navigation\" -> "\SD\" */
+/* The Map folder at the SD card root, with a trailing backslash: "\SD\Navigation\" -> "\SD\Map\". */
+static void sd_map_folder(WCHAR *folder)
+{
+    WCHAR root[MAX_PATH], *slash;
+    wcscpy(root, g_dir);
     if (wcslen(root) > 1)
         root[wcslen(root) - 1] = 0;
     slash = wcsrchr(root, L'\\');
@@ -798,12 +801,31 @@ static void map_open(void)
         wcscpy(root, L"\\");
     _snwprintf(folder, MAX_PATH, L"%sMap\\", root);
     folder[MAX_PATH - 1] = 0;
+}
+
+static void map_open(void)
+{
+    WCHAR folder[MAX_PATH], path[MAX_PATH];
+    WIN32_FIND_DATAW found;
+    HANDLE find;
+    int bad = 0, hidden = 0;
+
+    if (!map_init(&g_map, 12)) {
+        log_line("[map] not enough memory for the map");
+        return;
+    }
+    g_map_ok = 1;
+    sd_map_folder(folder);
     _snwprintf(path, MAX_PATH, L"%s*.pack", folder);
     path[MAX_PATH - 1] = 0;
     find = FindFirstFileW(path, &found);
     if (find != INVALID_HANDLE_VALUE) {
         do {
             HANDLE h;
+            if (hidden_name(found.cFileName)) {
+                hidden++;
+                continue;
+            }
             _snwprintf(path, MAX_PATH, L"%s%s", folder, found.cFileName);
             path[MAX_PATH - 1] = 0;
             h = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -817,7 +839,8 @@ static void map_open(void)
         FindClose(find);
     }
     if (g_map.count == 0) {
-        log_line("[map] no map files in the Map folder at the SD card root (%d unreadable)", bad);
+        log_line("[map] no map files in the Map folder at the SD card root (%d unreadable, %d ._ files skipped)", bad,
+                 hidden);
         return;
     }
     g_model.map_min_zoom = g_map.min_zoom;
@@ -828,8 +851,137 @@ static void map_open(void)
         g_model.map_zoom = g_map.min_zoom;
     while (g_model.map_zoom > g_map.min_zoom && !map_has_zoom(&g_map, g_model.map_zoom))
         g_model.map_zoom--;
-    log_line("[map] %d map files, zoom %d to %d, showing %d (%d unreadable)", g_map.count, g_map.min_zoom,
-             g_map.max_zoom, g_model.map_zoom, bad);
+    log_line("[map] %d map files, zoom %d to %d, showing %d (%d unreadable, %d ._ files skipped)", g_map.count,
+             g_map.min_zoom, g_map.max_zoom, g_model.map_zoom, bad, hidden);
+}
+
+/* ---------------------------------------------------------------- address (read-only) */
+
+/* The address file (*.addr, tools/address/) sits in the same Map folder. Lookups run on their
+ * own thread, since one can read a few hundred kilobytes from the SD card; the result goes to the
+ * screen only and is never logged (an address is as revealing as the position). */
+static AddrFile g_addr;
+static int g_addr_ok;
+static CRITICAL_SECTION g_addr_lock;
+static AddrResult g_addr_result;   /* guarded by g_addr_lock */
+static int g_addr_state;           /* guarded: ADDRESS_WAITING, ADDRESS_OUTSIDE or ADDRESS_OK */
+static DWORD g_addr_slowest_ms;
+
+/* The first *.addr file in the Map folder that opens; "._" side files are skipped. */
+static void address_open(void)
+{
+    WCHAR folder[MAX_PATH], path[MAX_PATH];
+    WIN32_FIND_DATAW found;
+    HANDLE find, h;
+    int bad = 0, hidden = 0;
+    DWORD error = 0;
+
+    sd_map_folder(folder);
+    _snwprintf(path, MAX_PATH, L"%s*.addr", folder);
+    path[MAX_PATH - 1] = 0;
+    find = FindFirstFileW(path, &found);
+    if (find != INVALID_HANDLE_VALUE) {
+        do {
+            if (hidden_name(found.cFileName)) {
+                hidden++;
+                continue;
+            }
+            _snwprintf(path, MAX_PATH, L"%s%s", folder, found.cFileName);
+            path[MAX_PATH - 1] = 0;
+            h = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+            if (h == INVALID_HANDLE_VALUE) {
+                error = GetLastError();
+                bad++;
+            } else if (!addr_open(&g_addr, h, file_read_at)) {
+                CloseHandle(h);
+                bad++;
+            } else {
+                g_addr_ok = 1;
+                break;
+            }
+        } while (FindNextFileW(find, &found));
+        FindClose(find);
+    }
+    if (!g_addr_ok) {
+        if (bad) {
+            g_model.address_state = ADDRESS_UNREADABLE;
+            log_line("[address] %d address files cannot be read (error %lu, %d ._ files skipped)", bad, error, hidden);
+        } else {
+            log_line("[address] no address file in the Map folder at the SD card root (%d ._ files skipped)", hidden);
+        }
+        return;
+    }
+    g_addr_state = ADDRESS_WAITING;
+    log_line("[address] address file: %u x %u cells, %u items (%d unreadable, %d ._ files skipped)", g_addr.cols,
+             g_addr.rows, g_addr.item_count, bad, hidden);
+}
+
+static DWORD WINAPI address_thread(LPVOID unused)
+{
+    int have_last = 0, last_lon = 0, last_lat = 0;
+    DWORD last_ms = 0;
+
+    while (!g_quit) {
+        NmeaState gps;
+        AddrResult r;
+        DWORD now, took;
+        int fresh, inside, dlat, dlon;
+
+        Sleep(1000);
+        now = GetTickCount();
+        EnterCriticalSection(&g_gps_lock);
+        gps = g_gps;
+        fresh = gps.have_rmc && gps.valid && gps.have_position && now - g_gps_tick < 3000;
+        LeaveCriticalSection(&g_gps_lock);
+        if (!fresh)
+            continue;
+        dlat = gps.lat_e6 - last_lat;
+        dlon = gps.lon_e6 - last_lon;
+        if (dlat < 0)
+            dlat = -dlat;
+        if (dlon < 0)
+            dlon = -dlon;
+        if (have_last && dlat < 135 && dlon < 140 && now - last_ms < 30000)
+            continue; /* again after about 15 m or 30 s */
+        inside = addr_lookup(&g_addr, gps.lon_e6, gps.lat_e6, &r);
+        took = GetTickCount() - now;
+        if (took > g_addr_slowest_ms)
+            g_addr_slowest_ms = took;
+        EnterCriticalSection(&g_addr_lock);
+        g_addr_result = r;
+        g_addr_state = inside ? ADDRESS_OK : ADDRESS_OUTSIDE;
+        LeaveCriticalSection(&g_addr_lock);
+        have_last = 1;
+        last_lat = gps.lat_e6;
+        last_lon = gps.lon_e6;
+        last_ms = now;
+    }
+    return 0;
+}
+
+static void copy_text(char *dst, const char *src, int size)
+{
+    int i;
+    for (i = 0; i < size - 1 && src[i]; i++)
+        dst[i] = src[i];
+    dst[i] = 0;
+}
+
+/* The latest address into the model (UI thread). */
+static void address_to_model(void)
+{
+    if (!g_addr_ok)
+        return;
+    EnterCriticalSection(&g_addr_lock);
+    g_model.address_state = g_addr_state;
+    copy_text(g_model.addr_road, g_addr_result.road, ADDRESS_TEXT);
+    copy_text(g_model.addr_barangay, g_addr_result.barangay, ADDRESS_TEXT);
+    copy_text(g_model.addr_city, g_addr_result.city, ADDRESS_TEXT);
+    copy_text(g_model.addr_province, g_addr_result.province, ADDRESS_TEXT);
+    copy_text(g_model.addr_place, g_addr_result.place, ADDRESS_TEXT);
+    g_model.addr_road_m = g_addr_result.road_m;
+    g_model.addr_place_m = g_addr_result.place_m;
+    LeaveCriticalSection(&g_addr_lock);
 }
 
 /* One zoom level in or out, skipping levels the map files do not have. */
@@ -959,6 +1111,7 @@ static void tick(void)
     in.tz_override = g_tz_set;
     in.tz_override_min = g_tz_min;
     dash_update(&g_model, &in);
+    address_to_model();
     if (g_model.clock_src == SRC_GPS) { /* once: what the GPS clock gave against the unit's clock */
         static int logged;
         if (!logged++)
@@ -983,6 +1136,9 @@ static void log_stats(void)
     if (g_map.count > 0)
         log_line("[map] zoom %d, %u tiles decoded, %u failed, %u read errors, slowest map draw %lu ms",
                  g_model.map_zoom, g_map.decoded, g_map.failed, g_map.read_errors, g_map_slowest_ms);
+    if (g_addr_ok) /* counts only: never the address */
+        log_line("[address] %u lookups, %u read errors, %u outlines skipped, slowest lookup %lu ms", g_addr.lookups,
+                 g_addr.read_errors, g_addr.skipped, g_addr_slowest_ms);
 }
 
 /* ---------------------------------------------------------------- window */
@@ -1109,6 +1265,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous, LPWSTR command_line, 
         wcscpy(g_dir, L"\\");
     InitializeCriticalSection(&g_log_lock);
     InitializeCriticalSection(&g_gps_lock);
+    InitializeCriticalSection(&g_addr_lock);
     open_log();
     log_line("=== Montero dashboard %s started (screen %dx%d)", DASH_VERSION, cx, cy);
 
@@ -1124,6 +1281,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous, LPWSTR command_line, 
     load_settings();
     dash_init(&g_model);
     map_open();
+    address_open();
 
     memset(&wc, 0, sizeof wc);
     wc.lpfnWndProc = main_proc;
@@ -1148,6 +1306,11 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous, LPWSTR command_line, 
     thread = CreateThread(NULL, 0, gps_thread, NULL, 0, NULL);
     if (thread)
         CloseHandle(thread);
+    if (g_addr_ok) {
+        thread = CreateThread(NULL, 0, address_thread, NULL, 0, NULL);
+        if (thread)
+            CloseHandle(thread);
+    }
     bus_start();
     tick();
     SetTimer(g_main, TIMER_TICK, 1000, NULL);

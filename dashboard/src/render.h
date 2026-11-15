@@ -1,7 +1,7 @@
 /* Draws the dashboard (800 x 480) through a small drawing interface, so the same layout code
  * runs with GDI on the head unit and writes an SVG preview on the build machine. Columns are
- * 1:2:2 wide: outside temperature, pressure and battery; the compass (rows 1 and 2) and the speed
- * panel; the map (rows 1 and 2) and elevation.
+ * 1:2:2 wide: outside temperature, pressure and battery; the compass (one row), elevation and
+ * speed; the map (rows 1 and 2) and the address.
  * Layout and colours follow the design canvas; text is UTF-8. Portable C. */
 #ifndef RENDER_H
 #define RENDER_H
@@ -16,7 +16,7 @@
 enum { FACE_MEDIUM, FACE_SEMIBOLD, FACE_CONDENSED, FACE_COUNT };
 enum {
     FONT_CLOCK, FONT_HEADER, FONT_LABEL, FONT_SMALL, FONT_TREND, FONT_UNIT, FONT_VALUE,
-    FONT_SPEED, FONT_STAT, FONT_HEADING, FONT_DIR, FONT_DIR_SMALL, FONT_ROSE, FONT_MENU, FONT_COUNT
+    FONT_SPEED, FONT_STAT, FONT_HEADING, FONT_DIR, FONT_DIR_SMALL, FONT_ROSE, FONT_MENU, FONT_ADDR, FONT_COUNT
 };
 
 typedef struct { int px; int face; } FontSpec;   /* px = em size, as CSS font-size */

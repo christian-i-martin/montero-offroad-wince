@@ -23,6 +23,7 @@ COMPILER = shutil.which("cc") or shutil.which("gcc") or shutil.which("clang")
 FLAGS = ["-std=c99", "-Wall", "-Wextra", "-Wno-unused-parameter", "-Werror",
          "-I", str(ROOT / "dashboard/src"), "-I", str(ROOT / "probe/src")]
 MAP_SOURCES = ["dashboard/src/map.c", "dashboard/src/pngdec.c"]
+ADDR_SOURCES = ["dashboard/src/addr.c"]
 DASH_SOURCES = ["dashboard/src/model.c", "dashboard/src/render.c", "dashboard/src/sun.c",
                 "probe/src/nmea.c", "probe/src/carinfo.c"]
 
@@ -117,7 +118,7 @@ class MapReaderTests(unittest.TestCase):
             out = Path(temp) / "previews"
             out.mkdir()
             binary = Path(temp) / "dashboard_preview"
-            compile_c("tests/c/dashboard_preview.c", DASH_SOURCES + MAP_SOURCES, binary)
+            compile_c("tests/c/dashboard_preview.c", DASH_SOURCES + MAP_SOURCES + ADDR_SOURCES, binary)
             result = subprocess.run([str(binary), str(ROOT / "dashboard/fonts"), str(out), str(maps)],
                                     capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

@@ -6,8 +6,8 @@ CFLAGS = -O2 -Wall -Wextra -Wno-unused-parameter -Wno-cast-function-type -march=
 OUT ?= build
 
 SHARED = ../probe/src/carinfo.c ../probe/src/busring.c ../probe/src/nmea.c
-SOURCES = src/dash.c src/model.c src/render.c src/sun.c src/map.c src/pngdec.c $(SHARED)
-HEADERS = src/model.h src/render.h src/sun.h src/map.h third_party/stb_image.h ../probe/src/carinfo.h ../probe/src/busring.h ../probe/src/nmea.h
+SOURCES = src/dash.c src/model.c src/render.c src/sun.c src/map.c src/pngdec.c src/addr.c $(SHARED)
+HEADERS = src/model.h src/render.h src/sun.h src/map.h src/addr.h third_party/stb_image.h ../probe/src/carinfo.h ../probe/src/busring.h ../probe/src/nmea.h
 FONTS = fonts/Barlow-Medium.ttf fonts/Barlow-SemiBold.ttf fonts/BarlowCondensed-SemiBold.ttf fonts/OFL.txt
 
 $(OUT)/Navigation.exe: $(SOURCES) $(HEADERS) $(FONTS) README.txt

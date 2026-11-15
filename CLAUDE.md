@@ -38,12 +38,17 @@ The repository root mirrors the SD card root, plus reference material:
   probe). `fonts/` holds the Barlow TTFs (SIL OFL) shipped next to the exe. The agreed design is
   the design canvas linked in the research doc's "Dashboard" section. `src/map.c` (offline map:
   reads `*.pack` files, composes the view) and `src/pngdec.c` (PNG decoding through the vendored
-  `third_party/stb_image.h`) are portable C too.
+  `third_party/stb_image.h`) are portable C too, and so is `src/addr.c` (offline address: reads the
+  `*.addr` file, nearest named road, barangay, city, province).
 - `tools/map/`: builds the offline map on the Mac (Luzon by default) from OpenStreetMap data:
   `mtpack.py` (the `.pack` format, shared with `map.c`), `build_map.sh` (planetiler and
   tileserver-gl in Docker, then `build_map.py`, the packer), `make_style.py` and
   `style/montero-dark.json` (our own dark map style). Output `dist/map/Map/`, copied to the SD card
   root as `\SD\Map\`.
+- `tools/address/`: builds the address file `dist/map/Map/luzon.addr` from the same OpenStreetMap
+  extract: `mtaddr.py` (the `.addr` format and the reference lookup that `addr.c` must match),
+  `build_address.sh` (osmium-tool in Docker, then `build_address.py`), `check_address.py`
+  (coverage report).
 - `tools/re/`: reverse-engineering helpers for the head unit files.
 - `docs/vehicle-data-research.md`: what vehicle data exists on the unit and how it flows. Read this
   before any dashboard or data-access work, and update it when new findings land.
@@ -102,7 +107,12 @@ tools/map/build_map.sh --min-zoom 15 --max-zoom 15       # add zoom 15 (separate
 tools/map/build_map.sh --bounds W,S,E,N --output DIR     # another area; must lie inside MAP_VECTOR_BOUNDS
 python3 tools/map/build_map.py --count --max-zoom 15     # tile counts only, no Docker
 python3 -m unittest tests.test_map_tools tests.test_map_reader -v   # packer, style, C map reader
+./tools/address/build_address.sh                         # -> dist/map/Map/luzon.addr (about 1 min)
+./tools/address/build_address.sh --check                 # the same plus the coverage report
+python3 -m unittest tests.test_address_tools tests.test_addr_reader -v   # builder; C reader vs reference
 ```
+
+The address and the position are shown on screen only: never write either to a log.
 
 `dashboard_preview FONT_DIR OUT_DIR MAP_DIR LAT LON` (built as in `tests/test_map_reader.py`)
 renders the previews with a real map composed by `map.c`.

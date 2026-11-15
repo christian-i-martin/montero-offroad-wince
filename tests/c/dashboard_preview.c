@@ -3,14 +3,16 @@
  * Usage: dashboard_preview FONT_DIR OUT_DIR [MAP_DIR [LAT LON]]
  * Writes driving.svg, parked-night.svg, no-gps.svg, startup.svg, menu.svg; the fonts are embedded
  * so any SVG viewer shows the real typeface. With MAP_DIR (a folder of *.pack files) the map is
- * composed by map.c exactly as on the head unit and embedded as a PNG picture; LAT LON move the
- * demo drive there (default 46 N 7.5 E, a made-up place). */
+ * composed by map.c exactly as on the head unit and embedded as a PNG picture, and an *.addr file
+ * there gives the address through addr.c; LAT LON move the demo drive there (default 46 N 7.5 E,
+ * a made-up place). */
 #include <dirent.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include "addr.h"
 #include "map.h"
 #include "model.h"
 #include "render.h"
@@ -188,6 +190,8 @@ static void svg_text(void *ctx, int x, int baseline, int font, unsigned rgb, con
 /* ---------------------------------------------------------------- map picture as PNG */
 
 static MapSet g_map;
+static AddrFile g_addr;
+static int g_addr_ok;
 static double g_lat = 46.0, g_lon = 7.5;
 
 static unsigned g_crc[256];
@@ -302,6 +306,12 @@ static int open_maps(const char *dir)
     while ((e = readdir(d)) != NULL) {
         size_t n = strlen(e->d_name);
         FILE *f;
+        if (n > 5 && strcmp(e->d_name + n - 5, ".addr") == 0 && !g_addr_ok) {
+            snprintf(path, sizeof path, "%s/%s", dir, e->d_name);
+            f = fopen(path, "rb");
+            g_addr_ok = f && addr_open(&g_addr, f, file_read_at);
+            continue;
+        }
         if (n < 6 || strcmp(e->d_name + n - 5, ".pack") != 0)
             continue;
         snprintf(path, sizeof path, "%s/%s", dir, e->d_name);
@@ -315,9 +325,24 @@ static int open_maps(const char *dir)
     return g_map.count;
 }
 
-/* The program sets the map view after dash_init: as dash.c does. */
+/* The program sets the map view and the address after dash_init: as dash.c does. */
 static void set_map_view(DashModel *m)
 {
+    if (g_addr_ok) {
+        AddrResult r;
+        m->address_state = !m->have_position ? ADDRESS_WAITING
+                         : addr_lookup(&g_addr, (int)floor(m->lon * 1e6 + 0.5), (int)floor(m->lat * 1e6 + 0.5), &r)
+                         ? ADDRESS_OK : ADDRESS_OUTSIDE;
+        if (m->address_state == ADDRESS_OK) {
+            snprintf(m->addr_road, ADDRESS_TEXT, "%s", r.road);
+            snprintf(m->addr_barangay, ADDRESS_TEXT, "%s", r.barangay);
+            snprintf(m->addr_city, ADDRESS_TEXT, "%s", r.city);
+            snprintf(m->addr_province, ADDRESS_TEXT, "%s", r.province);
+            snprintf(m->addr_place, ADDRESS_TEXT, "%s", r.place);
+            m->addr_road_m = r.road_m;
+            m->addr_place_m = r.place_m;
+        }
+    }
     if (g_map.count == 0)
         return;
     m->map_min_zoom = g_map.min_zoom;

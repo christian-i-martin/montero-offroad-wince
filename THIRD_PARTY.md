@@ -48,6 +48,18 @@ The map packs in `dist/map/Map/` (copied to `\SD\Map\`) are made on the build ma
 - The map style `tools/map/style/montero-dark.json` is this project's own, written from the
   OpenMapTiles schema.
 
+## Offline address
+
+`dist/map/Map/luzon.addr` (copied to `\SD\Map\`) is made by `tools/address/build_address.sh` from
+the same Geofabrik OpenStreetMap extract. It is a derived database under the ODbL 1.0: it needs
+the "© OpenStreetMap contributors" credit (shown on the map) and, if the file is ever published,
+the share-alike terms apply. The tools below only run on the build machine:
+
+- osmium-tool 1.18.0 (GPL-3.0; libosmium under the Boost Software License 1.0), installed as the
+  Debian package `osmium-tool=1.18.0-1` in a local image built from
+  `debian@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2` (trixie-slim).
+- The PSA standard list of local government units (PSGC) was used only to compare counts.
+
 ## Superseded MortScript workflow
 
 Commit `7fd8236465c5cf9cdd26dd3e3f49e8e5ec12fa7b` built an overlay using `LaunchTotalCommander/Arthur.exe`, `MortScript.exe`, and a selection-menu script. The direct replacement no longer uses these components. Do not install previously generated overlays for the current workflow.

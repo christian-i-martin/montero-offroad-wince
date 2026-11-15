@@ -137,7 +137,7 @@ The bus window of each app has this name as both class and title. `Main.exe`'s o
   `SP_GetSysInfo`) through one helper (RVA `0x1aa10`, 93 call sites), which also broadcasts
   `PostMessageW(HWND_BROADCAST, 0x52A, index, value)` to every top-level window. Seen: index 9 =
   lights (1 on, 0 off), index 8 = reverse / rear camera, index 0x41 also changes with page
-  switches.
+  switches. Decoded: index 0 = Bluetooth connection state (see "Bluetooth").
 - **Heartbeat (Seen).** `Main.exe` sends `0x6D3` to every bus window about every 6 seconds; each
   registered app answers `0x6D4` with arg1 = its own id. `Main.exe` records `0x6D1` and `0x6D4` in
   its app-state table (RVA `0x542cc`), so `0x6D4` means "still alive", not "stopped". The probe
@@ -319,8 +319,79 @@ Bundle strings are UTF-8. `USBApi::sendToInfoBar` sets the info's type field to 
 on its flag argument (probably video or music). There is no playback position, so a progress bar
 would have to be timed by the dashboard. Seen: run 2 logged `0x4A0` from the Bluetooth app (`0x0D`)
 and `0x496` (`rearSrc`, `normalSrc`, `frontSrc`), which looks like the current audio source. Not
-known yet: the `SourceID` and `PlayState` codes, how often `0x4A0` is sent, and whether Bluetooth
-music carries title and artist (that depends on the phone sending them).
+known yet: the `PlayState` codes, how often `0x4A0` is sent, and whether Bluetooth music carries
+title and artist (that depends on the phone sending them). No probe run had music playing.
+
+`SourceID` uses `Main.exe`'s source list (**Decoded**, name function at RVA `0xa194`): 0 tuner,
+1 disc, 7 SD, 9 iPod, 10 USB, 13 Bluetooth audio, 20 Bluetooth phone, 21 Pandora, 29 CarPlay,
+30 none. Seen: `0x4A0` from the Bluetooth app with `SourceID` 20, and `0x496` arg1 7 with
+`SourceID` 13 or 30.
+
+### Media keys (Decoded)
+
+`Main.exe`'s `KeyManager` takes keys from the MCU (event `0x1F`, two bytes: key and value) and
+from its own panel and InfoBar code, and hands each key to the handler of the program concerned.
+About 28 handlers share one method (RVA `0x4a340`) that posts bus message `0x4AB` with arg1 = key
+and arg2 = key state to that program; one handler (RVA `0x4b6ec`, probably Bluetooth's) keeps the
+phone keys (`0x41` tel, `0x76` BT, `0x5E` send, `0x5F` end) for itself. `SkCom.dll`'s shared receive code (RVA `0xa5cc`)
+passes `0x4AB` to the program's command callback without looking at the sender. Key numbers (name
+function at RVA `0xa370`): 1 mute, 2 play, 3 next, 4 previous, 6 source, `0x2C`/`0x2D` rewind and
+fast forward, `0x2F` shuffle, `0x30` repeat, `0x74`/`0x75` steering-wheel previous and next; the
+InfoBar's buttons are `0x10001` previous, `0x10002` next, `0x10003` play/pause, `0x1000B` mute,
+`0x1000C` repeat. No message was found that asks `Main.exe` itself to act on a key from another
+program, and `SystemHelper` has no key call (`showCurrSource` opens the playing program's screen).
+Not known yet: the arg2 values (press, release, long press) and whether a program acts on `0x4AB`
+from a sender other than `Main.exe`. Not tried on the car.
+
+## Bluetooth (Decoded, partly Seen)
+
+**Parts (Seen, probe 0.2 survey).** The stack is CSR's BCHS (BlueCore Host Software), loaded as a
+driver: `CSR1:` (`Drivers\CSR\BCHSDRV`, `btp_driver.dll`, chip settings
+`\NandFlash\Application\Driver\ps-csr_soc_platform.psr`), power control `BTT0:` (`btpower.dll`) and
+the serial-port profile ports `COM4:`/`COM9:` (`btp_sppdrv.dll`); the chip itself is on `COM3:`.
+Paired devices and their link keys (the secret shared with each phone) are in
+`ScDbFile = "\backup\bt_sc.db"`. Microsoft's `btd.dll`, `BTSVC.Dll` and `bthusb.dll` (USB dongles)
+are installed too. The program is `\NandFlash\Application\Bluetooth\`: `Bluetooth.exe` (283,648
+bytes), `SkBluetoothCore.dll` (694,272), `SP_BTCore.dll` (84,992), `SP_CSR8311.dll` (244,224),
+`bt8311reg.dll`, `Bluetooth.ini`, `BTConfig.ini`; its screens are in `BluetoothRes.spp`,
+`BluetoothExRes.spp` and `BluetoothRes.bin` (next to the other `*Res.spp`). One process owns the
+bus window `Bluetooth` (app `0x0D`), the screen `BluetoothWindow` (JUCE, 800 x 480), `SP_BTWidnow`
+(sic, 1 x 1), `Legacy Phonebook Access` and two windows with GUID class names. None of these files
+has been copied off the unit yet.
+
+**Talking to other programs (Decoded).**
+
+- `SkCom.dll`'s `BluetoothApi` has no call to list paired devices, connect or disconnect. It has
+  `sendToInfoBar` (now playing, above), `startA2DPSrc` (posts `0x475` arg1 15 to `Main.exe`) and a
+  receive side that hands `0x4A`, `0x499`, `0x79F`, `0x7A0`, `0x7A1`, `0x7B6` and `0xBE3A` (test
+  mode) to `Bluetooth.exe`'s own callbacks. `Main.exe` sends it only `0x499` (arg1 11 or 12, an
+  on/off pair) and `0x79F` (arg1 3); at start-up `0x79F` arg1 10 arg2 1 and arg1 1 arg2 3 were
+  **Seen**. No program on the unit asks `Bluetooth.exe` to connect a device.
+- `Bluetooth.exe` reports to `Main.exe` with `0x475` (arg1 = what, arg2 = value), handled by
+  `BluetoothApplication::handleBTState` (`Main.exe` RVA `0x70428`, cases 1 to 20; `0x490` is
+  test-mode data passed to the MCU). Case 1 is the connection state: `Main.exe` stores arg2 as
+  system info index 0 (so window message `0x52A` wParam 0 reaches every top-level window) and, for
+  arg2 = 1, sets setup string `0x40F` back to "No Device". When setup value 8 is 0 (probably
+  Bluetooth switched off) it stores 0 instead. Case 2 covers calls ("Calling...", "Dailing" (sic),
+  "Connected..."), phone audio and mute, by arg2. **Seen** at every start, with no phone connected:
+  arg1 1 arg2 1, arg1 6 arg2 0, arg1 14 arg2 1. The values with a phone connected are not known.
+- Setup string `0x40F` is `BTDeviceName` (`SkShareMem.dll` key table at RVA `0x22110` + `0x464`,
+  default "No Device"). `Main.exe` only ever writes "No Device", so the connected device's name
+  is written by `Bluetooth.exe`; not seen yet. It can be read with `SP_GetSetupValueString`
+  (static, returns a `juce::String`: hidden result pointer in r0, index in r1).
+- `SystemHelper::showBluetooth()` (`SkCom.dll`) opens the factory Bluetooth screen:
+  `PostMessageW(FindWindowW(NULL, "NavigRecive"), 0x46D, 5, 0)`. wParam 6, 7, 8 and 0x10 open
+  maintenance, TPMS, telematics info and time alignment. `Main.exe` passes `0x46D` on as internal
+  message `0x2000025`. Not tried on the car.
+
+**For the dashboard.** A small panel showing whether a device is connected and its name can be
+read-only (system info index 0, setup string `0x40F`), once a log shows the values with a phone
+connected. Choosing among paired devices from the dashboard is not possible with what is known: the
+paired list lives in the stack's database and inside `Bluetooth.exe`, and no known message asks it
+to connect a device. Whether `Bluetooth.exe` accepts such a request can only be answered from a copy
+of its folder. Sending commands to `CSR1:` or `COM3:` directly would compete with `Bluetooth.exe`,
+which owns the stack, and is out of bounds. The fallback is a button that opens the factory
+Bluetooth screen with `0x46D`.
 
 ## GPS and the other serial ports (Seen)
 
@@ -435,20 +506,24 @@ USB serial adapter would need a Windows CE driver added. Two built-in routes avo
 
 ## Dashboard
 
-`dashboard/` (version 0.2.0, **built, not run on the car yet**; 0.1.0 ran, see "First run" below) is
+`dashboard/` (version 0.3.0, **built, not run on the car yet**; 0.1.0 ran, see "First run" below) is
 the one-page dashboard from the design canvas (https://claude.ai/artifact/9WDQyDaPa6RprDPPk3ST8x,
 private). It is a complete SD `Navigation` folder: `Navigation.exe`, `fonts/` (Barlow), `README.txt`,
 and `TotalCommander/cecmd.exe` when Total Commander was built. The map's files go in a separate
-`Map` folder at the SD card root (see "Map" below).
+`Map` folder at the SD card root (see "Map" and "Address" below). Columns are 1:2:2 wide (150, 301,
+301 px): outside, pressure, battery; heading (one row), elevation, speed; map (two rows), address.
+Every graph draws its first value flat from the left edge, so it fills its width from the first
+sample on ("Collecting data" only while there is none).
 
 | Tile | Source | Rule |
 |---|---|---|
 | Pressure, graph of 1 h | CarInfo `0x21` | sampled every 30 s; "weather" trend from sea-level pressure (needs GPS altitude) over at least 1 h, scaled to 3 h: 1 hPa = falling or rising, 3 hPa = falling fast |
 | Elevation, graph of 20 km | GPS altitude, 10-second average | car's barometric elevation plus the last GPS-minus-car difference when GPS has no fix; climb rate over about a minute; a graph point every 250 m |
 | Outside, graph of 3 h | CarInfo `0x31` | sampled every 90 s; change shown after 30 min |
-| Heading | GPS course above 6 km/h (back below 4 km/h) | otherwise the car's 8-point compass (`0x11`) |
+| Heading (one row: rose left, degrees right) | GPS course above 6 km/h (back below 4 km/h) | otherwise the car's 8-point compass (`0x11`) |
 | Battery, graph of 30 min | CarInfo `0x40` | 13.2 V and up charging, 12.2 to 13.2 V not charging, below 12.2 V low, 14.8 V and up too high |
 | Map (wide column 3, rows 1 and 2) | GPS position, `\SD\Map\*.pack` | north-up offline map filling the whole tile (no title or label; rounded corners painted over), centred on the last GPS position; arrow along the GPS course while the heading comes from GPS, otherwise a dot (grey without a fix); +/- zoom through the levels the files hold (start at 14); half brightness at night |
+| Address (wide column 3, row 3) | GPS position, `\SD\Map\*.addr` | nearest named road within 50 m (else "No named road nearby"), "Brgy." and the barangay (else "Near" and the nearest named place), then city and province; looked up on its own thread after about 15 m or 30 s; the last address stays, marked "Last GPS position", without a fix; never logged |
 | Speed panel (wide column 2, row 3) | GPS | current speed large, average (counts only above 3 km/h) and top speed (highest median of three readings) small on the right, both since the dashboard started and not saved; graph of the last 10 min, a point every 5 s (mean of that time), none while GPS has no fix |
 | Header | GPS time, bus | clock: GPS UTC time and date (1024-week rollover corrected), kept running on the tick count when the signal drops; the unit's clock only when its year is 2020 or later. Time zone: the menu choice (`dashboard-settings.txt`), else UTC+8 (`DEFAULT_UTC_OFFSET_MIN` in `dash.c`, the user's choice). The model can also derive it from the unit's clock or time-zone setting, but `dash.c` always passes a zone because both are unreliable on this unit. Sunset or sunrise from the last GPS position. "Headlights on" and night colours from `0x52A` index 9 or `0x33` bit `0x04` |
 
@@ -510,6 +585,51 @@ decoded, failures, read errors and the slowest map draw in ms. Open questions fo
 whether `CreateDIBSection` with `BI_BITFIELDS` 565 works on this unit, how long a tile takes to
 decode from the SD card (the first draw after a zoom change decodes up to four), and whether the
 map is readable in sunlight.
+
+### Address (dashboard 0.3, **built and tested on the Mac only**)
+
+`tools/address/build_address.sh` makes `luzon.addr` (about 28.6 MB, 1 min) from the same
+Geofabrik extract: osmium-tool 1.18 (Debian package in a local Docker image, no network) exports
+boundaries, named roads and places as GeoJSON, and `build_address.py` simplifies them (outlines
+10 m, roads 4 m) and writes a **Montero address file** (`*.addr`, format and reference lookup in
+`tools/address/mtaddr.py`): a grid of 0.02 degree cells, each listing copies of the 32-byte
+records of the shapes that really reach it (outlines, roads within 75 m, places within 3 km), then
+coordinates and names. `dashboard/src/addr.c` reads one cell's records, tests the outlines whose box
+holds the point (even-odd rule, so holes and multi-part areas work; the smallest box of a kind
+wins), finds the nearest named road within 50 m and the nearest named place within 3 km, and reads
+only the winning names. In the real file a lookup reads about 18 KB (63 KB at most); `dash.c` runs
+it on its own thread after about 15 m or 30 s. `dash.c` opens the first `*.addr` in `\SD\Map\` that
+reads as one and skips names starting with a dot (for both `*.addr` and `*.pack`): a Mac copying to
+the FAT card adds a `._name` side file (its file details) next to each file, which also matches the
+pattern. Before that change, the first car run of 0.3.0 showed "No address file"; the cause is not
+yet known from a log (either `luzon.addr` was not on the card, or the `._luzon.addr` side file was
+found first and failed to open, which 0.3.0 showed the same way).
+The screen now says "No address file" only when no `*.addr` exists and "Address file cannot be
+read" when one exists but does not open. `tests/test_addr_reader.py` checks the C reader
+against the Python reference on a made-up file and on the built Luzon file (junction ties, where two
+roads are equally near, may name either road).
+
+OpenStreetMap tagging in the Philippines (checked in the 2026-11-13 extract): admin_level 4
+province, 6 city or municipality (Pateros included), 10 barangay (numbered ones are named
+"Barangay 470" and so on; the dashboard adds "Brgy." only to other names); 3 region, 5 Metro Manila
+districts, 7 legislative districts, 8 and 9 Manila's districts and zones, 11 and 12 sitio and purok.
+Metro Manila has no province, so its level-3 outline is used as "Metro Manila". OpenStreetMap
+leaves the independent cities Baguio, Angeles, Olongapo, Lucena and Naga out of their provinces, so
+a fixed table adds them back under the province people write (Baguio, Benguet). Barangays come
+from relations and level-10 closed ways (52 Laoag barangays are wrongly tagged level 6 and are
+skipped). Names the font cannot draw are rewritten (Roman numeral characters to I, II, ...; "№" to
+"No."; the non-breaking hyphen to "-").
+
+Coverage in Luzon against PSA's list (PSGC, 30 June 2026): all 37 provinces in the box; 416 of
+about 724 cities and municipalities have outlines (about 57%; complete in Metro Manila, Central
+Luzon's south and Calabarzon, almost none in Abra, Kalinga, Quirino, Nueva Vizcaya, the Ilocos
+provinces, Isabela, Ifugao and Apayao); 3,566 of about 19,700 barangays (about 18%; Quezon City
+complete, Manila 147 of 897). About 13,900 barangays exist as named points, so the tile falls back
+to "Near" the nearest place. Of named village, hamlet and neighbourhood points, 100% get a province,
+63% a city and 22% a barangay outline. Along all drivable roads (sampled every 400 m), 33% get a road
+name within 50 m: motorways and trunk roads over 98%, primary 97%, secondary 83%, tertiary 35%,
+residential 32%, unclassified 10%, tracks 3%; a named place within 3 km 97% (89% on tracks).
+Missing names and outlines can be added in OpenStreetMap; they appear after the next build.
 
 ## The probe
 
@@ -613,6 +733,15 @@ shared-memory pointer and refuses to start on another build.
    no-purchase route. For real steering angle, RPM and coolant: a small USB-network sensor board
    (CAN for steering angle and yaw rate, OBD-II requests for RPM and coolant).
 4. Run dashboard 0.1.0 (`dashboard/README.txt`) and bring back `dashboard-log.txt`.
+5. Bluetooth device switching: copy `\NandFlash\Application\Bluetooth\` and the three
+   `Bluetooth*Res` files to the SD card with Total Commander (copy, never move; do not copy
+   `\backup\bt_sc.db`, it holds link keys), to find out whether `Bluetooth.exe` accepts a connect
+   request and where it keeps the paired list. For the status panel, log `0x475`, `0x52A` wParam 0
+   and setup string `0x40F` while connecting, disconnecting and switching phones in the factory
+   screen.
+6. Media: run the probe's bus logging while Bluetooth music plays, and press next, previous and
+   pause on the steering wheel and on the InfoBar. The log should show `0x4AB` (key and state, to
+   the Bluetooth app) and `0x4A0` with the song fields.
 
 ## Reproducing this analysis
 

@@ -387,6 +387,70 @@ static void test_speed_and_map(void)
     CHECK(g_bad == 0 && g_map_calls == 2 && strstr(g_texts, "Waiting for GPS") != NULL);
 }
 
+/* Graphs show a line from the first sample on; the address tile in each of its states. */
+static void test_address_and_graphs(void)
+{
+    char long_road[ADDRESS_TEXT];
+
+    reset();
+    step(1);                                /* one sample in every series */
+    g_texts[0] = '\0';
+    g_bad = 0;
+    render_dashboard(&g_rec, &m);
+    CHECK(g_bad == 0 && strstr(g_texts, "Collecting data") == NULL);
+    CHECK(strstr(g_texts, "No address file") != NULL);
+    CHECK(strstr(g_texts, "Copy luzon.addr into the Map folder") != NULL);
+    m.address_state = ADDRESS_UNREADABLE;
+    g_texts[0] = '\0';
+    render_dashboard(&g_rec, &m);
+    CHECK(strstr(g_texts, "Address file cannot be read") != NULL && strstr(g_texts, "No address file") == NULL);
+
+    m.address_state = ADDRESS_WAITING;
+    g_texts[0] = '\0';
+    render_dashboard(&g_rec, &m);
+    CHECK(strstr(g_texts, "Waiting for GPS") != NULL);
+    m.address_state = ADDRESS_OUTSIDE;
+    g_texts[0] = '\0';
+    render_dashboard(&g_rec, &m);
+    CHECK(strstr(g_texts, "Outside the address area") != NULL);
+
+    m.address_state = ADDRESS_OK;
+    strcpy(m.addr_road, "Sumulong Highway");
+    strcpy(m.addr_barangay, "San Isidro");
+    strcpy(m.addr_city, "Antipolo");
+    strcpy(m.addr_province, "Rizal");
+    strcpy(m.addr_place, "Cupang");
+    g_texts[0] = '\0';
+    render_dashboard(&g_rec, &m);
+    CHECK(strstr(g_texts, "|Sumulong Highway|Brgy. San Isidro|Antipolo, Rizal|") != NULL);
+    CHECK(strstr(g_texts, "Last GPS position") == NULL);
+
+    m.addr_road[0] = 0;                     /* no road, a numbered barangay, no city */
+    strcpy(m.addr_barangay, "Barangay 649");
+    m.addr_city[0] = 0;
+    g_texts[0] = '\0';
+    render_dashboard(&g_rec, &m);
+    CHECK(strstr(g_texts, "|No named road nearby|Barangay 649|Rizal|") != NULL);
+    m.addr_barangay[0] = 0;                 /* no barangay: the nearest place */
+    g_texts[0] = '\0';
+    render_dashboard(&g_rec, &m);
+    CHECK(strstr(g_texts, "|Near Cupang|") != NULL);
+
+    memset(long_road, 'W', sizeof long_road - 1); /* too wide: cut with an ellipsis */
+    long_road[sizeof long_road - 1] = 0;
+    strcpy(m.addr_road, long_road);
+    g_texts[0] = '\0';
+    g_bad = 0;
+    render_dashboard(&g_rec, &m);
+    CHECK(g_bad == 0 && strstr(g_texts, "W\xE2\x80\xA6|") != NULL && strstr(g_texts, long_road) == NULL);
+
+    in.gps_fresh = 0;                       /* GPS lost: the last address stays, marked */
+    step(1);
+    g_texts[0] = '\0';
+    render_dashboard(&g_rec, &m);
+    CHECK(strstr(g_texts, "Last GPS position") != NULL);
+}
+
 static void test_render(void)
 {
     reset();
@@ -458,6 +522,7 @@ int main(void)
     test_sun();
     test_render();
     test_speed_and_map();
+    test_address_and_graphs();
     if (failures) {
         printf("%d failure(s)\n", failures);
         return 1;
