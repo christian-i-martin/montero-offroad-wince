@@ -1,8 +1,8 @@
 """Compile and run the dashboard's portable code on the build machine.
 
 The self-test covers the model rules (GPS-first elevation and heading, speeds, trends, battery),
-sunrise and sunset, and the drawing calls. The preview test renders seven screens (five of the
-dashboard, the car info page by day and by night) to SVG through
+sunrise and sunset, and the drawing calls. The preview test renders eight screens (five of the
+dashboard, three of the car info page) to SVG through
 the same render.c the head unit uses; set DASHBOARD_PREVIEW_DIR to keep them for a look.
 """
 from pathlib import Path
@@ -19,7 +19,7 @@ SOURCES = ["dashboard/src/model.c", "dashboard/src/render.c", "dashboard/src/sun
            "dashboard/src/map.c", "dashboard/src/pngdec.c", "dashboard/src/addr.c",
            "probe/src/nmea.c", "probe/src/carinfo.c"]
 SCENES = ["driving.svg", "parked-night.svg", "no-gps.svg", "startup.svg", "menu.svg", "carinfo.svg",
-          "carinfo-night.svg"]
+          "carinfo-size.svg", "carinfo-night.svg"]
 
 
 def build(main, binary):

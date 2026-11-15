@@ -37,16 +37,17 @@ typedef struct {
     unsigned solid;              /* opaque panels: the menu, and platforms that cannot mix colours */
     unsigned border, line, text, muted, accent, graph, cool, warn, area, spark, button, on_accent, outline;
     unsigned plate;              /* the number plate's background on the car info page */
+    unsigned chosen_note;        /* the note on the chosen car info category (filled with text) */
 } Theme;
 /* Day: light panels; night: dark panels, warm amber. Both mixed in at 90 % (230 of 256, the user's
  * choice). accent is for text, graph for lines and marks, cool for the car on the map, area for the
  * filled part of the elevation graph. */
 static const Theme g_day = {0xE9E7DF, 0xFAFAF6, 230, 0xF4F4F0, 0xD5D7D3, 0xC6C9C5, 0x17202A, 0x4B5763, 0xB5400C,
                             0xE8590C, 0x1971C2, 0xC92A2A, 0xF5DECD, 0x5E6B78, 0xE4E5E1, 0xFFFFFF, 0xFFFFFF,
-                            0xFFFFFF};
+                            0xFFFFFF, 0xC9CED3};
 static const Theme g_night = {0x1E242A, 0x10141A, 230, 0x161B21, 0x2C3138, 0x3A414A, 0xEDE8DE, 0xA3ADB7, 0xF6A623,
                               0xF6A623, 0x5BC0EB, 0xFF7849, 0x382F1F, 0x8A96A3, 0x232931, 0x14181C, 0x0B0E11,
-                              0x1A2027};
+                              0x1A2027, 0x4B5763};
 
 /* Layout (design canvas): 10 px from the screen edges, 8 px between panels. */
 #define EDGE 10
@@ -1011,40 +1012,140 @@ static const signed char ci_drive_a[] = {R(3, 16, 4, 6), R(17, 16, 4, 6), R(7, 1
 static const signed char ci_weight[] = {R(8, 2, 8, 2), R(8, 4, 2, 4), R(14, 4, 2, 4), R(8, 8, 8, 2),
                                         6, 6, 10, 18, 10, 21, 16, 21, 22, 3, 22, 3, 16, 0};
 
+static const signed char ci_gearbox[] = {8, 7, 1, 17, 1, 17, 8, 13, 8, 13, 15, 11, 15, 11, 8, 7, 8,   /* selector */
+                                         R(3, 15, 18, 2), R(3, 20, 18, 2), R(3, 17, 2, 3), R(19, 17, 2, 3), 0};
+static const signed char ci_length[] = {CAR_TOP(2, 4), CAR_WHEELS(2, 4), 0};      /* accent: ci_width_a */
+
+/* Fluids: the part the fluid is for, and a drop or the level in the accent colour. */
+static const signed char ci_oil[] = {R(6, 6, 5, 4), R(2, 10, 13, 10), 4, 15, 12, 21, 9, 21, 11, 15, 14, 0};  /* can */
+static const signed char ci_oil_a[] = {5, 21, 13, 23, 15, 23, 18, 19, 18, 19, 15, 0};
+static const signed char ci_atf[] = {8, 3, 2, 11, 2, 11, 8, 8, 8, 8, 15, 6, 15, 6, 8, 3, 8,        /* selector */
+                                     R(1, 15, 12, 2), R(1, 19, 12, 2), R(1, 17, 2, 2), R(11, 17, 2, 2), 0};
+static const signed char ci_atf_a[] = {9, 19, 5, 21, 9, 23, 11, 23, 17, 21, 19, 17, 19, 15, 17, 15, 11, 17, 9, 0};
+static const signed char ci_diff[] = {R(1, 4, 4, 8), R(19, 4, 4, 8), R(5, 7, 14, 2),               /* rear axle */
+                                      8, 10, 4, 14, 4, 16, 6, 16, 10, 14, 12, 10, 12, 8, 10, 8, 6, 0};
+static const signed char ci_diff_a[] = {7, 12, 14, 15, 17, 15, 20, 14, 21, 10, 21, 9, 20, 9, 17, 0};
+static const signed char ci_coolant[] = {R(9, 1, 6, 2),                                         /* thermometer */
+                                         12, 9, 3, 9, 13, 7, 15, 7, 20, 10, 23, 12, 23, 12, 21, 11, 21, 9, 19, 9, 16,
+                                             11, 14, 11, 3,
+                                         12, 12, 23, 14, 23, 17, 20, 17, 15, 15, 13, 15, 3, 13, 3, 13, 14, 15, 16,
+                                             15, 19, 13, 21, 12, 21, 0};
+static const signed char ci_coolant_a[] = {10, 11, 9, 13, 9, 13, 14, 15, 16, 15, 19, 13, 21, 11, 21, 9, 19, 9, 16,
+                                           11, 14, 0};
+static const signed char ci_brake[] = {6, 7, 5, 15, 5, 19, 9, 19, 11, 3, 11, 3, 9,                  /* disc */
+                                       6, 3, 15, 19, 15, 19, 17, 15, 21, 7, 21, 3, 17, R(3, 11, 6, 4), R(13, 11, 6, 4), 0};
+static const signed char ci_brake_a[] = {8, 15, 1, 19, 1, 23, 5, 23, 11, 21, 11, 21, 6, 18, 3, 15, 3, 0}; /* calliper */
+static const signed char ci_steering[] = {   /* a steering wheel: the rim in eight pieces, hub and spokes */
+    4, 8, 2, 16, 2, 15, 4, 9, 4,       4, 16, 2, 22, 8, 20, 9, 15, 4,
+    4, 22, 8, 22, 16, 20, 15, 20, 9,   4, 22, 16, 16, 22, 15, 20, 20, 15,
+    4, 16, 22, 8, 22, 9, 20, 15, 20,   4, 8, 22, 2, 16, 4, 15, 9, 20,
+    4, 2, 16, 2, 8, 4, 9, 4, 15,       4, 2, 8, 8, 2, 9, 4, 4, 9,
+    R(10, 10, 4, 4), R(4, 11, 6, 2), R(14, 11, 6, 2), R(11, 14, 2, 6), 0};
+static const signed char ci_washer[] = {4, 5, 10, 19, 10, 20, 12, 4, 12,   4, 2, 16, 22, 16, 23, 18, 1, 18,  /* screen */
+                                        4, 4, 12, 7, 12, 5, 16, 2, 16,     4, 17, 12, 20, 12, 22, 16, 19, 16, 0};
+static const signed char ci_washer_a[] = {R(5, 3, 2, 4), R(11, 1, 2, 6), R(17, 3, 2, 4), 0};          /* spray */
+static const signed char ci_aircon[] = {R(11, 1, 2, 22), R(1, 11, 22, 2), 4, 3, 5, 5, 3, 21, 19, 19, 21,  /* snow */
+                                        4, 19, 3, 21, 5, 5, 21, 3, 19, 0};
+
+/* Side bar icons, 20 px: the car from the front, a height with the ground, a drop. */
+static const signed char cat_general[] = {4, 4, 3, 16, 3, 17, 5, 3, 5,   4, 3, 5, 5, 5, 4, 7, 2, 7,
+                                          4, 15, 5, 17, 5, 18, 7, 16, 7, R(1, 7, 18, 2), R(1, 9, 2, 2),
+                                          R(6, 9, 8, 2), R(17, 9, 2, 2), R(1, 11, 18, 4), R(3, 15, 3, 2),
+                                          R(14, 15, 3, 2), 0};
+static const signed char cat_size[] = {3, 10, 0, 14, 4, 6, 4, R(9, 4, 2, 8), 3, 6, 12, 14, 12, 10, 16,
+                                       R(1, 18, 18, 2), 0};
+static const signed char cat_fluids[] = {9, 10, 1, 14, 9, 16, 11, 16, 15, 13, 18, 7, 18, 4, 15, 4, 11, 6, 9, 0};
+
 /* The car: 2016 Mitsubishi Montero Sport (third generation), 2.4 diesel, rear-wheel drive (4x2).
  * Figures from Mitsubishi's published specifications for this model (Australian Pajero Sport data
  * where the Philippine sheet was not available); tyre pressure and gross weight are worth checking
- * against the door-pillar sticker and the registration papers. */
+ * against the door-pillar sticker and the registration papers. Fluids: types and amounts from
+ * Mitsubishi's owner's manual (the 2020 Thai edition, same 4N15 engine and 8-speed gearbox), change
+ * intervals from the Philippine dealer's service guide; the brake fluid change from the Australian
+ * schedule (the Philippine guide only checks the level). */
 #define PLATE_NUMBER "NDE 4391"
 
 typedef struct {
     const signed char *icon, *accent;  /* accent: the part that is measured, or NULL */
-    const char *label, *value, *unit, *sub;
+    const char *label, *value, *unit;
+    const char *sub[3];                /* detail lines under the value, NULL when unused */
+    const char *const *rows;           /* a double-width tile: label and value pairs, ending with NULL */
     int plate;                         /* value drawn as a number plate */
 } InfoTile;
 
-static const InfoTile g_tiles[16] = {
-    {ci_plate, NULL, "PLATE NUMBER", PLATE_NUMBER, NULL, NULL, 1},
-    {ci_fuel, NULL, "FUEL TYPE", "Diesel", NULL, "Euro 4 grade", 0},
-    {ci_tank, NULL, "FUEL TANK", "68", "L", "Full capacity", 0},
-    {ci_engine, NULL, "ENGINE", "2.4", "L turbo", "181 PS" DOT "430 Nm", 0},
-    {ci_wading, ci_wading_a, "WATER WADING", "700", "mm", "Maximum, at walking pace", 0},
-    {ci_ground, ci_ground_a, "GROUND CLEARANCE", "218", "mm", "Unladen", 0},
-    {ci_height, ci_height_a, "HEIGHT CLEARANCE", "1,805", "mm", "Overall height, unladen", 0},
-    {ci_width, ci_width_a, "WIDTH", "1,815", "mm", "Body, without mirrors", 0},
-    {ci_approach, ci_approach_a, "APPROACH ANGLE", "30" DEG, NULL, "Front overhang", 0},
-    {ci_departure, ci_departure_a, "DEPARTURE ANGLE", "24.2" DEG, NULL, "Rear overhang", 0},
-    {ci_breakover, ci_breakover_a, "BREAKOVER ANGLE", "23.1" DEG, NULL, "Crest between the axles", 0},
-    {ci_turning, NULL, "TURNING CIRCLE", "11.2", "m", "Kerb to kerb", 0},
-    {ci_tyre, NULL, "TYRE SIZE", "265/60 R18", NULL, "18 in alloy wheels", 0},
-    {ci_pressure, ci_pressure_a, "TYRE PRESSURE", "29 / 32", "psi", "Cold, front / rear", 0},
-    {ci_drive, ci_drive_a, "DRIVE", "4x2", NULL, "Rear wheels, 8-speed auto", 0},
-    {ci_weight, NULL, "GROSS WEIGHT", "2,710", "kg", "Fully loaded maximum", 0},
+typedef struct {
+    const char *name, *desc;
+    const signed char *icon;
+    const InfoTile *tiles;
+    int count;                         /* at most 9 places: a double-width tile takes 2 */
+} InfoCategory;
+
+static const InfoTile g_general[] = {
+    {ci_plate, NULL, "PLATE NUMBER", PLATE_NUMBER, NULL, {NULL}, NULL, 1},
+    {ci_fuel, NULL, "FUEL TYPE", "Diesel", NULL, {"Euro 4 grade"}, NULL, 0},
+    {ci_tank, NULL, "FUEL TANK", "68", "L", {"Full capacity"}, NULL, 0},
+    {ci_engine, NULL, "ENGINE", "2.4", "L turbo", {"4N15 diesel", "181 PS" DOT "430 Nm"}, NULL, 0},
+    {ci_gearbox, NULL, "GEARBOX", "8-speed", NULL, {"Automatic"}, NULL, 0},
+    {ci_drive, ci_drive_a, "DRIVE", "4x2", NULL, {"Rear-wheel drive", "No low range"}, NULL, 0},
+    {ci_tyre, NULL, "TYRE SIZE", "265/60 R18", NULL, {"18 in alloy wheels"}, NULL, 0},
+    {ci_pressure, ci_pressure_a, "TYRE PRESSURE", "29 / 32", "psi", {"Cold, front / rear"}, NULL, 0},
+    {ci_weight, NULL, "GROSS WEIGHT", "2,710", "kg", {"Fully loaded maximum"}, NULL, 0},
 };
 
-/* 4 x 4 tiles below the header, 10 px from the screen edges, 8 px apart. */
-#define TILE_W ((SCREEN_W - 2 * EDGE - 3 * GAP) / 4)   /* 189 */
-#define TILE_H ((BOTTOM - TOP - 3 * GAP) / 4)          /* 99 */
+static const InfoTile g_size[] = {
+    {ci_ground, ci_ground_a, "GROUND CLEARANCE", "218", "mm", {"Unladen"}, NULL, 0},
+    {ci_wading, ci_wading_a, "WATER WADING", "700", "mm", {"Maximum, at walking pace"}, NULL, 0},
+    {ci_height, ci_height_a, "HEIGHT CLEARANCE", "1,805", "mm", {"Overall height, unladen"}, NULL, 0},
+    {ci_approach, ci_approach_a, "APPROACH ANGLE", "30" DEG, NULL, {"Front overhang"}, NULL, 0},
+    {ci_departure, ci_departure_a, "DEPARTURE ANGLE", "24.2" DEG, NULL, {"Rear overhang"}, NULL, 0},
+    {ci_breakover, ci_breakover_a, "BREAKOVER ANGLE", "23.1" DEG, NULL, {"Crest between the axles"}, NULL, 0},
+    {ci_width, ci_width_a, "WIDTH", "1,815", "mm", {"Body, without mirrors"}, NULL, 0},
+    {ci_length, ci_width_a, "LENGTH", "4,785", "mm", {"Bumper to bumper"}, NULL, 0},
+    {ci_turning, NULL, "TURNING CIRCLE", "11.2", "m", {"Kerb to kerb"}, NULL, 0},
+};
+
+static const char *const g_oil_rows[] = {
+    "GRADE", "5W-30, or 10W-30, 15W-40",
+    "ACEA", "A1/B1, A3/B3, A3/B4, A5/B5",
+    "API", "CD or better",
+    "SYNTHETIC", "10,000 km or 8 months",   /* change intervals by oil type */
+    "MINERAL", "5,000 km or 4 months",
+    "FILTER", "Genuine, at every change",
+    NULL};
+
+static const InfoTile g_fluids[] = {
+    {ci_oil, ci_oil_a, "ENGINE OIL", "7.4", "L", {"Total, with filter", "Sump 7.0 + filter 0.3", "+ oil cooler 0.1"},
+     g_oil_rows, 0},
+    {ci_atf, ci_atf_a, "GEARBOX FLUID", "12.8", "L", {"Mitsubishi ATF-MA1 only", "60,000 km or 48 months"}, NULL, 0},
+    {ci_diff, ci_diff_a, "REAR DIFFERENTIAL", "2.1", "L", {"GL-5 SAE 80 gear oil", "30,000 km or 24 months"}, NULL, 0},
+    {ci_coolant, ci_coolant_a, "COOLANT", "7.7", "L", {"Long-life, 50% mix", "45,000 km or 36 months"}, NULL, 0},
+    {ci_brake, ci_brake_a, "BRAKE FLUID", "DOT 3 / 4", NULL, {"Level checked each service", "30,000 km or 24 months"},
+     NULL, 0},
+    {ci_steering, NULL, "POWER STEERING", "PSF", NULL, {"Mitsubishi Genuine", "Level checked each service"}, NULL, 0},
+    {ci_washer, ci_washer_a, "WASHER FLUID", "3.5", "L", {"Any washer fluid"}, NULL, 0},
+    {ci_aircon, NULL, "A/C REFRIGERANT", "770-810", "g", {"HFC-134a"}, NULL, 0},
+};
+
+#define COUNT(a) ((int)(sizeof(a) / sizeof((a)[0])))
+static const InfoCategory g_categories[CARINFO_CATEGORIES] = {
+    {"General", "Plate, fuel, engine, tyres", cat_general, g_general, COUNT(g_general)},
+    {"Size and clearance", "Clearances, angles, size", cat_size, g_size, COUNT(g_size)},
+    {"Fluids", "Types, amounts, intervals", cat_fluids, g_fluids, COUNT(g_fluids)},
+};
+
+/* The page keeps the 4 columns of the first car info page (189 px, 8 px apart): the first is the
+ * side bar, one panel with its own border holding the category buttons; the other three hold the
+ * tiles, 3 x 3. */
+#define COL_W ((SCREEN_W - 2 * EDGE - 3 * GAP) / 4)   /* 189 */
+#define TILES_X (EDGE + COL_W + GAP)                   /* 207 */
+#define TILE_H ((BOTTOM - TOP - 2 * GAP) / 3)          /* 135 */
+#define CAT_PAD 8                                      /* side bar edge to the buttons */
+#define CAT_X (EDGE + 1 + CAT_PAD)
+#define CAT_W (COL_W - 2 - 2 * CAT_PAD)                /* 171 */
+#define CAT_H 76
+#define CAT_GAP 6
+#define CAT_Y(i) (TOP + 1 + CAT_PAD + (i) * (CAT_H + CAT_GAP))
+#define WIDE_LEFT 118                                  /* a double-width tile: the amount's column */
 #define BACK_END 90                                    /* the Back button: x 0 to here */
 
 /* The number plate: letters spaced 2 px apart on a light (by night dark) plate with a 2 px border. */
@@ -1068,19 +1169,69 @@ static void draw_plate(const Canvas *c, const Theme *t, int x, int y, const char
     }
 }
 
-static void draw_tile(const Canvas *c, const Theme *t, const InfoTile *it, int x, int y)
+/* The value at the bottom of a tile's column and the detail lines under it. */
+static void tile_value(const Canvas *c, const Theme *t, const InfoTile *it, int x, int bottom, int w)
 {
-    glass(c, t, x, y, TILE_W, TILE_H, RADIUS);
-    icon_shape(c, it->icon, x + 12, y + 9, t->muted);
-    if (it->accent)
-        icon_shape(c, it->accent, x + 12, y + 9, t->accent);
-    label(c, x + 44, y + 25, t->muted, it->label);
-    if (it->plate) {
-        draw_plate(c, t, x + 12, y + TILE_H - 10 - 44, it->value);
-        return;
+    int n = 0, i, base;
+    while (n < 3 && it->sub[n])
+        n++;
+    base = bottom - 15 - (n ? n - 1 : 0) * 17;   /* the first detail line; 17 px apart */
+    value_unit(c, t, x, base - (n ? 20 : 0), FONT_TILE, it->value, FONT_UNIT, it->unit, 3);
+    for (i = 0; i < n; i++)
+        fitted(c, x, base + i * 17, FONT_SMALL, t->muted, w, it->sub[i]);
+}
+
+/* The rows of a double-width tile: upper-case names in one column, values beside them, centred. */
+static void tile_rows(const Canvas *c, const Theme *t, const char *const *rows, int x, int y, int w, int h)
+{
+    int n = 0, lw = 0, i, base;
+    while (rows[2 * n]) {
+        int k = label_width(c, rows[2 * n]);
+        lw = k > lw ? k : lw;
+        n++;
     }
-    value_unit(c, t, x + 12, y + 66, FONT_TILE, it->value, FONT_UNIT, it->unit, 3);
-    fitted(c, x + 12, y + 86, FONT_SMALL, t->muted, TILE_W - 24, it->sub);
+    base = y + (h - (18 * n - 3)) / 2 + 11;
+    for (i = 0; i < n; i++, base += 18) {
+        label(c, x, base, t->muted, rows[2 * i]);
+        fitted(c, x + lw + 8, base, FONT_SMALL, t->text, w - lw - 8, rows[2 * i + 1]);
+    }
+}
+
+static void draw_tile(const Canvas *c, const Theme *t, const InfoTile *it, int x, int y, int w)
+{
+    glass(c, t, x, y, w, TILE_H, RADIUS);
+    icon_shape(c, it->icon, x + 12, y + 10, t->muted);
+    if (it->accent)
+        icon_shape(c, it->accent, x + 12, y + 10, t->accent);
+    label(c, x + 44, y + 26, t->muted, it->label);
+    if (it->plate) {
+        draw_plate(c, t, x + 12, y + TILE_H - 12 - 44, it->value);
+    } else if (it->rows) {
+        int line = x + 12 + WIDE_LEFT + 10;
+        tile_value(c, t, it, x + 12, y + TILE_H, WIDE_LEFT);
+        c->fill_rect(c->ctx, line, y + 10, 1, TILE_H - 21, t->border);
+        tile_rows(c, t, it->rows, line + 11, y, x + w - 12 - (line + 11), TILE_H);
+    } else {
+        tile_value(c, t, it, x + 12, y + TILE_H, w - 24);
+    }
+}
+
+/* The side bar: one panel with a stronger border, a button per category; the chosen one filled
+ * with the text colour, the others a shade off the panel. */
+static void draw_categories(const Canvas *c, const Theme *t, int chosen)
+{
+    int i;
+    glass(c, t, EDGE, TOP, COL_W, BOTTOM - TOP, RADIUS);
+    c->round_rect(c->ctx, EDGE, TOP, COL_W, BOTTOM - TOP, RADIUS, NO_FILL, t->line);
+    for (i = 0; i < CARINFO_CATEGORIES; i++) {
+        const InfoCategory *k = &g_categories[i];
+        int y = CAT_Y(i), on = i == chosen;
+        unsigned fill = on ? t->text : t->button, fg = on ? t->panel : t->text;
+        c->round_rect(c->ctx, CAT_X, y, CAT_W, CAT_H, 10, fill, fill);
+        icon_shape(c, k->icon, CAT_X + 10, y + 7, fg);
+        fitted(c, CAT_X + 10, y + 48, FONT_ADDR, fg, CAT_W - 14, k->name);
+        fitted(c, CAT_X + 10, y + 67, FONT_SMALL, on ? t->chosen_note : t->muted, CAT_W - 14, k->desc);
+    }
 }
 
 /* Header: Back, the car's make, model and year; the time on the right. */
@@ -1108,20 +1259,42 @@ static void draw_carinfo_header(const Canvas *c, const Theme *t, const DashModel
     icon_shape(c, g_clock, x - 26, 10, t->muted);
 }
 
-void render_carinfo(const Canvas *c, const DashModel *m)
+void render_carinfo(const Canvas *c, const DashModel *m, int category)
 {
     const Theme *t = m->night ? &g_night : &g_day;
-    int i;
+    const InfoCategory *k;
+    int i, place = 0;
 
+    if (category < 0 || category >= CARINFO_CATEGORIES)
+        category = CARINFO_GENERAL;
+    k = &g_categories[category];
     c->fill_rect(c->ctx, 0, 0, SCREEN_W, SCREEN_H, t->bg);
     draw_carinfo_header(c, t, m);
-    for (i = 0; i < 16; i++)
-        draw_tile(c, t, &g_tiles[i], EDGE + (i % 4) * (TILE_W + GAP), TOP + (i / 4) * (TILE_H + GAP));
+    draw_categories(c, t, category);
+    for (i = 0; i < k->count && place < 9; i++) {
+        int span = k->tiles[i].rows ? 2 : 1;
+        if (place % 3 + span > 3) /* a double-width tile never wraps: it starts the next row */
+            place += 3 - place % 3;
+        if (place + span > 9)
+            break;
+        draw_tile(c, t, &k->tiles[i], TILES_X + (place % 3) * (COL_W + GAP), TOP + (place / 3) * (TILE_H + GAP),
+                  span * COL_W + (span - 1) * GAP);
+        place += span;
+    }
 }
 
 int render_carinfo_back_hit(int x, int y)
 {
     return x >= 0 && x < BACK_END && y >= 0 && y < HEADER_H + 4;
+}
+
+int render_carinfo_category_hit(int x, int y)
+{
+    int i;
+    for (i = 0; i < CARINFO_CATEGORIES; i++)
+        if (x >= EDGE && x < EDGE + COL_W && y >= CAT_Y(i) - CAT_GAP / 2 && y < CAT_Y(i) + CAT_H + CAT_GAP / 2)
+            return i;
+    return -1;
 }
 
 /* ---------------------------------------------------------------- maintenance menu */

@@ -1,4 +1,4 @@
-MONTERO DASHBOARD 0.5.3
+MONTERO DASHBOARD 0.6.0
 
 What it is
   A one-page off-road dashboard that the head unit's NAV button opens instead of
@@ -57,12 +57,22 @@ Map
   Map data (c) OpenMapTiles (c) OpenStreetMap contributors.
 
 Car info
-  A page of fixed facts about the car: plate number, fuel type, fuel tank,
-  engine, water wading depth, ground and height clearance, width, approach,
-  departure and breakover angles, turning circle, tyre size and pressure,
-  drive and gross weight. They are built into the program (2016 Montero Sport
-  2.4 diesel 4x2); nothing is read from the car. Check the tyre pressure
-  against the sticker on the driver's door pillar.
+  A page of fixed facts about the car. The buttons on the left choose what the
+  tiles on the right show:
+    General: plate number, fuel type, fuel tank, engine, gearbox, drive, tyre
+      size, tyre pressure, gross weight.
+    Size and clearance: ground clearance, water wading depth, height,
+      approach, departure and breakover angles, width, length, turning circle.
+    Fluids: engine oil (amount, grade, ACEA and API classes, how often to
+      change it, filter), gearbox fluid, rear differential oil, coolant,
+      brake fluid, power steering fluid, washer fluid, A/C refrigerant, each
+      with its type, amount and change interval.
+  The facts are built into the program (2016 Montero Sport 2.4 diesel 4x2);
+  nothing is read from the car. The fluid types and amounts come from
+  Mitsubishi's owner's manual, the change intervals from the Philippine
+  dealer's service guide. Check the tyre pressure against the sticker on the
+  driver's door pillar, and the fluids against the manual in the glovebox.
+  The page remembers the last category until the dashboard is closed.
 
 Address
   Bottom right: the nearest named road (within 50 m), the barangay, then the

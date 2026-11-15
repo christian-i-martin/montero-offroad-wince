@@ -315,9 +315,13 @@ static int rec_width(void *ctx, int font, const char *s)
 {
     return (int)strlen(s) * render_fonts[font].px * g_width_percent / 100;
 }
+static const char *g_watch; /* a text whose colour is recorded in g_watch_rgb */
+static unsigned g_watch_rgb;
 static void rec_text(void *ctx, int x, int baseline, int font, unsigned rgb, const char *s)
 {
     g_calls++;
+    if (g_watch && strcmp(s, g_watch) == 0)
+        g_watch_rgb = rgb;
     if (x < 0 || x > SCREEN_W || baseline < 0 || baseline > SCREEN_H)
         g_bad++;
     if (strlen(g_texts) + strlen(s) + 2 < sizeof g_texts) {
@@ -649,31 +653,72 @@ static void test_gps_blink(void)
     CHECK(g_header_left == shown[0]);
 }
 
-/* The car info page: header, the 16 tiles with the plate, Back; the header button that opens it. */
+/* The car info page: header, the side bar, each category's tiles, Back; the header button. */
 static void test_carinfo(void)
 {
     static const char head[] = "Back|Mitsubishi Montero Sport|2016 \xC2\xB7 2.4 diesel 4x2|12:00 PM|";
+    static const char side[] = "|General|Plate, fuel, engine, tyres|Size and clearance|Clearances, angles, size|"
+                               "Fluids|Types, amounts, intervals|";
+    int night;
 
     reset();
     step(1);
+    g_width_percent = 45; /* closer to Barlow than the usual 50 %: the page's longest lines fit then */
     g_texts[0] = '\0';
     g_bad = 0;
-    render_carinfo(&g_rec, &m);
+    g_watch = "Fluids";
+    render_carinfo(&g_rec, &m, CARINFO_GENERAL);
     CHECK(g_bad == 0);
     CHECK(strncmp(g_texts, head, sizeof head - 1) == 0);
-    CHECK(strstr(g_texts, "|N|D|E| |4|3|9|1|") != NULL); /* the plate, letter by letter */
-    CHECK(strstr(g_texts, "|700|mm|Maximum, at walking pace|") != NULL);
+    CHECK(strstr(g_texts, side) != NULL);
+    CHECK(g_watch_rgb == 0x17202A);                       /* not chosen: the text colour */
+    CHECK(strstr(g_texts, "|N|D|E| |4|3|9|1|") != NULL);  /* the plate, letter by letter */
+    CHECK(strstr(g_texts, "|2.4|L turbo|4N15 diesel|181 PS \xC2\xB7 430 Nm|") != NULL);
+    CHECK(strstr(g_texts, "|4x2|Rear-wheel drive|No low range|") != NULL);
     CHECK(strstr(g_texts, "|265/60 R18|18 in alloy wheels|") != NULL);
-    CHECK(strstr(g_texts, "|4x2|Rear wheels, 8-speed auto|") != NULL);
     CHECK(strstr(g_texts, "|2,710|kg|Fully loaded maximum|") != NULL);
-    m.night = 1;
+    CHECK(strstr(g_texts, "|700|mm|") == NULL && strstr(g_texts, "|7.4|L|") == NULL);
+
+    g_texts[0] = '\0';
+    render_carinfo(&g_rec, &m, CARINFO_SIZE);
+    CHECK(strstr(g_texts, "|700|mm|Maximum, at walking pace|") != NULL);
+    CHECK(strstr(g_texts, "|23.1\xC2\xB0|Crest between the axles|") != NULL);
+    CHECK(strstr(g_texts, "|4,785|mm|Bumper to bumper|") != NULL);
+    CHECK(strstr(g_texts, "|11.2|m|Kerb to kerb|") != NULL);
+    CHECK(strstr(g_texts, "|N|D|E|") == NULL);
+
+    for (night = 0; night < 2; night++) {     /* engine oil: double width, every detail */
+        m.night = night;
+        g_texts[0] = '\0';
+        g_bad = 0;
+        render_carinfo(&g_rec, &m, CARINFO_FLUIDS);
+        CHECK(g_bad == 0);
+        CHECK(g_watch_rgb == (night ? 0x10141A : 0xFAFAF6));  /* chosen: drawn on the text colour */
+        CHECK(strstr(g_texts, "|7.4|L|Total, with filter|Sump 7.0 + filter 0.3|+ oil cooler 0.1|") != NULL);
+        CHECK(strstr(g_texts, "|G|R|A|D|E|5W-30, or 10W-30, 15W-40|") != NULL);
+        CHECK(strstr(g_texts, "|A|P|I|CD or better|") != NULL);
+        CHECK(strstr(g_texts, "|M|I|N|E|R|A|L|5,000 km or 4 months|") != NULL);
+        CHECK(strstr(g_texts, "|F|I|L|T|E|R|Genuine, at every change|") != NULL);
+        CHECK(strstr(g_texts, "|12.8|L|Mitsubishi ATF-MA1 only|60,000 km or 48 months|") != NULL);
+        CHECK(strstr(g_texts, "|770-810|g|HFC-134a|") != NULL);
+    }
+    g_watch = NULL;
+    m.night = 0;
+    g_texts[0] = '\0';
     g_bad = 0;
-    render_carinfo(&g_rec, &m);
-    CHECK(g_bad == 0);
+    render_carinfo(&g_rec, &m, 7);            /* out of range: General */
+    CHECK(g_bad == 0 && strstr(g_texts, "|N|D|E|") != NULL);
+
+    CHECK(render_carinfo_category_hit(100, 90) == CARINFO_GENERAL);
+    CHECK(render_carinfo_category_hit(30, 170) == CARINFO_SIZE);
+    CHECK(render_carinfo_category_hit(190, 250) == CARINFO_FLUIDS);
+    CHECK(render_carinfo_category_hit(100, 400) == -1 && render_carinfo_category_hit(300, 90) == -1);
+    CHECK(render_carinfo_category_hit(40, 20) == -1);   /* Back is not a category */
     CHECK(render_carinfo_back_hit(40, 20) && !render_carinfo_back_hit(300, 20) && !render_carinfo_back_hit(40, 100));
     CHECK(render_carinfo_button_hit(760, 20) && !render_carinfo_button_hit(600, 20));
     CHECK(!render_carinfo_button_hit(760, 100));
     CHECK(!render_clock_hit(760, 20));       /* the button is not the clock */
+    g_width_percent = 50;
 }
 
 static void test_render(void)

@@ -506,7 +506,7 @@ USB serial adapter would need a Windows CE driver added. Two built-in routes avo
 
 ## Dashboard
 
-`dashboard/` (version 0.5.3, **built, not run on the car yet**; 0.1.0 ran, see "First run" below) is
+`dashboard/` (version 0.6.0, **built, not run on the car yet**; 0.1.0 ran, see "First run" below) is
 the dashboard from the map-background design canvas
 (https://claude.ai/artifact/FkFvhi7mSFDTMhACtCK7ST, private; versions 0.1 to 0.3 followed the earlier
 column layout of https://claude.ai/artifact/9WDQyDaPa6RprDPPk3ST8x). It is a complete SD `Navigation`
@@ -558,19 +558,43 @@ height of a change was never the problem: a 30 m climb moves the elevation line 
 | Header (semi-transparent, over the map) | GPS time, bus | clock: GPS UTC time and date (1024-week rollover corrected), kept running on the tick count when the signal drops; the unit's clock only when its year is 2020 or later. Time zone: the menu choice (`dashboard-settings.txt`), else UTC+8 (`DEFAULT_UTC_OFFSET_MIN` in `dash.c`, the user's choice). The model can also derive it from the unit's clock or time-zone setting, but `dash.c` always passes a zone because both are unreliable on this unit. Times are in 12-hour form with AM or PM (the user's choice, 0.5). GPS status ("Waiting for GPS" without a fix, its icon blinking 1 s on and 1 s off at the 1 s repaint, the user's choice in 0.5.3), "Headlights on" while the bus reports them (`0x52A` index 9 or `0x33` bit `0x04`), "No car data"; on the right sunset (with the time left; without it, or left out, when it would run into the items on the left) or sunrise from the last GPS position, then the car info button (an icon only: a car with an "i" badge) |
 | Day and night colours | GPS position and time; bus | dark from sunset to sunrise (the next sun event is sunrise), light from sunrise to sunset, checked every 10 s with the sunset time; the headlights decide only until GPS has given time and position (the unit's clock resets to 2012). Logged as `[colours] night, from sunset and sunrise` (or `from the headlights`) when it changes |
 
-Car info page (0.5, `render_carinfo` in `render.c`): opened with the button at the right end of the
-header, closed with Back at the top left; the same header bar (Back, "Mitsubishi Montero Sport",
-"2016 · 2.4 diesel 4x2", the time on the right) and 16 tiles in a 4 x 4 grid, each with a 24 px
-pixel-grid icon (the measured part in the accent colour), a name, a value and one detail line.
-Everything on it is fixed in the program: plate NDE 4391 (the user's), diesel (Euro 4), tank 68 L,
-2.4 L turbo 181 PS 430 Nm, wading 700 mm, ground clearance 218 mm, height 1,805 mm, width 1,815 mm,
-approach 30°, departure 24.2°, breakover 23.1°, turning circle 11.2 m, tyres 265/60 R18, pressure
-29 / 32 psi cold front / rear, 4x2 with the 8-speed automatic, gross weight 2,710 kg. The figures are
-Mitsubishi's published ones for this model, mostly from Australian Pajero Sport data because the
-Philippine sheet could not be read; tyre pressure and gross weight come from 4x4 and Australian
-sources and should be checked against the door-pillar sticker and the registration papers, and the
-gearbox and tyre size depend on the trim (not confirmed). The page draws no map, so it costs less
-than the dashboard; the model keeps updating behind it.
+Car info page (`render_carinfo` in `render.c`; 0.5 had 16 tiles in a 4 x 4 grid, 0.6 has categories):
+opened with the button at the right end of the header, closed with Back at the top left; the same
+header bar (Back, "Mitsubishi Montero Sport", "2016 · 2.4 diesel 4x2", the time on the right). The
+body keeps the 4 columns of 0.5 (189 px, 8 px apart). The first is the side bar: one panel with a
+stronger border (the user wanted it clearly apart) holding a button per category, 76 px tall, with a
+20 px icon, the name and a one-line note; the chosen one is filled with the text colour (not the
+accent, like the header button's badge), the others with the theme's button shade. The other three
+columns hold the chosen category's tiles, 3 x 3, 135 px tall (at most 9 places, the user's limit),
+each with a 24 px pixel-grid icon (the measured part or the fluid in the accent colour), a name, a
+value and up to two detail lines. A tile with `rows` takes two places: the value and three lines on
+the left, a table of named rows on the right. `dash.c` keeps the category while it runs
+(`g_carinfo_cat`) and logs `[page] car info, category N` when it changes.
+
+- General: plate NDE 4391 (the user's), diesel (Euro 4), tank 68 L, 2.4 L turbo (4N15, 181 PS,
+  430 Nm), 8-speed automatic, 4x2 (rear-wheel drive, no low range), tyres 265/60 R18, pressure 29 /
+  32 psi cold front / rear, gross weight 2,710 kg.
+- Size and clearance: ground clearance 218 mm, wading 700 mm, height 1,805 mm, approach 30°,
+  departure 24.2°, breakover 23.1°, width 1,815 mm, length 4,785 mm, turning circle 11.2 m.
+- Fluids: engine oil 7.4 L (sump 7.0 + filter 0.3 + oil cooler 0.1) as a double-width tile with
+  grade 5W-30 (10W-30 and 15W-40 also allowed), ACEA A1/B1, A3/B3, A3/B4 or A5/B5, API CD or better,
+  change every 10,000 km or 8 months (synthetic) or 5,000 km or 4 months (mineral), genuine filter at
+  every change; gearbox ATF-MA1 only, 12.8 L, 60,000 km or 48 months; rear differential GL-5 SAE 80,
+  2.1 L, 30,000 km or 24 months; coolant long-life 50 % mix, 7.7 L, 45,000 km or 36 months; brake
+  fluid DOT 3 or 4, replaced every 30,000 km or 24 months; power steering Mitsubishi PSF; washer
+  3.5 L; A/C refrigerant HFC-134a, 770 to 810 g.
+
+The dimensions are Mitsubishi's published ones for this model, mostly from Australian Pajero Sport
+data because the Philippine sheet could not be read; tyre pressure and gross weight come from 4x4
+and Australian sources and should be checked against the door-pillar sticker and the registration
+papers, and the gearbox and tyre size depend on the trim (not confirmed). Fluid types and amounts
+come from Mitsubishi Thailand's English owner's manual for the 2020 facelift (same 4N15 engine and
+8-speed gearbox; no 2016 to 2019 manual is online), the change intervals from Mitsubishi Motors
+Philippines' service guide for the Montero Sport (24MY and older), and the brake fluid change from
+the Australian schedule (the Philippine guide only checks the level). Not settled: whether the
+Philippine engine has a diesel particulate filter (DPF); if it does, the oil must be ACEA C2 or C3
+instead. The page draws no map, so it costs less than the dashboard; the model keeps updating
+behind it.
 
 Car data counts as current for 30 s after the last CarInfo reply, GPS for 3 s after the last RMC
 sentence. The bus client is the probe's: it joins as `TerminalA` (waits while another `TerminalA`

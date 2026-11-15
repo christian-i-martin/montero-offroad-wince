@@ -35,7 +35,7 @@ The repository root mirrors the SD card root, plus reference material:
   elevation and heading with car fallbacks, speeds, histories, trends, day and night colours from
   the sun), `src/render.c` (the 800 x 480 layout: the map across the whole screen under
   semi-transparent panels, pixel-grid icons, line graphs, and the car info page behind the
-  header's car button; drawn through a small `Canvas` interface) and `src/sun.c` (sunset) are portable C; `src/dash.c` is the Windows CE program (GDI
+  header's car button, with a side bar of categories (General, Size and clearance, Fluids); drawn through a small `Canvas` interface) and `src/sun.c` (sunset) are portable C; `src/dash.c` is the Windows CE program (GDI
   drawing into a 16-bit DIB back buffer, GPS thread, bus client copied from the probe). `fonts/`
   holds the Barlow TTFs (SIL OFL) shipped next to the exe. The agreed design is the design canvas
   linked in the research doc's "Dashboard" section: panels are tinted, never blurred (processor
@@ -91,7 +91,7 @@ Dashboard build and checks (same Docker image):
 ```sh
 ./tools/build_dashboard.sh                  # -> dist/dashboard/Navigation/ (adds Total Commander if built)
 python3 -m unittest tests.test_dashboard -v # model, sun, drawing calls, SVG previews (host C compiler)
-DASHBOARD_PREVIEW_DIR=/some/new/dir python3 -m unittest tests.test_dashboard   # keep the 7 previews
+DASHBOARD_PREVIEW_DIR=/some/new/dir python3 -m unittest tests.test_dashboard   # keep the 8 previews
 ```
 
 The previews go through the same `render.c` with text widths read from the Barlow files, so they

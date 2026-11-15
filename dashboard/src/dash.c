@@ -29,7 +29,7 @@
 #include "render.h"
 #include "sun.h"
 
-#define DASH_VERSION "0.5.3"
+#define DASH_VERSION "0.6.0"
 #define WINDOW_CLASS L"MonteroDashboard"
 #define WINDOW_TITLE L"GPS - Navigation" /* SP_MAIN.ini [NAVIGATION] TITLE */
 
@@ -128,6 +128,7 @@ static int g_lights;               /* last lights state seen on the bus */
 static DashModel g_model;
 static int g_menu, g_has_files;
 static int g_carinfo;             /* the car info page is shown instead of the dashboard */
+static int g_carinfo_cat;         /* its category (CARINFO_GENERAL ...), kept while the program runs */
 static WCHAR g_files_path[MAX_PATH];
 #define DEFAULT_UTC_OFFSET_MIN 480 /* UTC+8 until another time zone is chosen in the menu */
 static int g_tz_set = 1, g_tz_min = DEFAULT_UTC_OFFSET_MIN; /* time zone in use, minutes from UTC */
@@ -1117,7 +1118,7 @@ static void paint(HDC target)
     c.map = gdi_map;
     c.glass = g_back_bits ? gdi_glass : NULL;
     if (g_carinfo) {
-        render_carinfo(&c, &g_model);
+        render_carinfo(&c, &g_model, g_carinfo_cat);
     } else {
         render_dashboard(&c, &g_model);
         if (g_menu)
@@ -1264,9 +1265,14 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpa
             }
             InvalidateRect(hwnd, NULL, FALSE);
         } else if (g_carinfo) {
+            int cat = render_carinfo_category_hit(x, y);
             if (render_carinfo_back_hit(x, y)) {
                 g_carinfo = 0;
                 log_line("[page] dashboard");
+                InvalidateRect(hwnd, NULL, FALSE);
+            } else if (cat >= 0 && cat != g_carinfo_cat) {
+                g_carinfo_cat = cat;
+                log_line("[page] car info, category %d", cat);
                 InvalidateRect(hwnd, NULL, FALSE);
             }
         } else if (render_carinfo_button_hit(x, y)) {

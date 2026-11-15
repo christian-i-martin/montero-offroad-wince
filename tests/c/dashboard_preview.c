@@ -2,7 +2,8 @@
  * taken from the Barlow font files, so the layout can be checked on the build machine.
  * Usage: dashboard_preview FONT_DIR OUT_DIR [MAP_DIR [LAT LON]]
  * Writes driving.svg, parked-night.svg, no-gps.svg, startup.svg, menu.svg, and the car info page
- * as carinfo.svg (day) and carinfo-night.svg; the fonts are embedded
+ * as carinfo.svg (General, day), carinfo-size.svg (Size and clearance, day) and carinfo-night.svg
+ * (Fluids, night); the fonts are embedded
  * so any SVG viewer shows the real typeface. With MAP_DIR (a folder of *.pack files, light ones for
  * the day in its Day folder) the map is composed by map.c exactly as on the head unit and embedded
  * as a PNG picture under the semi-transparent panels, and an *.addr file
@@ -379,7 +380,7 @@ static void base64(FILE *out, const unsigned char *d, long n)
     }
 }
 
-enum { PAGE_DASHBOARD, PAGE_MENU, PAGE_CARINFO };
+enum { PAGE_DASHBOARD, PAGE_MENU, PAGE_CARINFO, PAGE_CARINFO_SIZE, PAGE_CARINFO_FLUIDS };
 
 static int write_svg(const char *dir, const char *name, const DashModel *m, int page)
 {
@@ -397,8 +398,8 @@ static int write_svg(const char *dir, const char *name, const DashModel *m, int 
         fprintf(g_out, "); }\n");
     }
     fprintf(g_out, "</style>\n");
-    if (page == PAGE_CARINFO) {
-        render_carinfo(&g_svg, m);
+    if (page >= PAGE_CARINFO) {
+        render_carinfo(&g_svg, m, page - PAGE_CARINFO);
     } else {
         render_dashboard(&g_svg, m);
         if (page == PAGE_MENU)
@@ -515,11 +516,12 @@ int main(int argc, char **argv)
     }
     simulate(&m, SCENE_DRIVING);
     if (!write_svg(argv[2], "driving.svg", &m, PAGE_DASHBOARD) || !write_svg(argv[2], "menu.svg", &m, PAGE_MENU) ||
-        !write_svg(argv[2], "carinfo.svg", &m, PAGE_CARINFO))
+        !write_svg(argv[2], "carinfo.svg", &m, PAGE_CARINFO) ||
+        !write_svg(argv[2], "carinfo-size.svg", &m, PAGE_CARINFO_SIZE))
         return 1;
     simulate(&m, SCENE_PARKED_NIGHT);
     write_svg(argv[2], "parked-night.svg", &m, PAGE_DASHBOARD);
-    write_svg(argv[2], "carinfo-night.svg", &m, PAGE_CARINFO);
+    write_svg(argv[2], "carinfo-night.svg", &m, PAGE_CARINFO_FLUIDS);
     simulate(&m, SCENE_NO_GPS);
     m.gps_wait |= 1; /* the blinking GPS icon in its shown second */
     write_svg(argv[2], "no-gps.svg", &m, PAGE_DASHBOARD);
@@ -527,6 +529,6 @@ int main(int argc, char **argv)
     set_map_view(&m);
     m.gps_wait = 1;
     write_svg(argv[2], "startup.svg", &m, PAGE_DASHBOARD);
-    printf("wrote 7 previews to %s\n", argv[2]);
+    printf("wrote 8 previews to %s\n", argv[2]);
     return 0;
 }

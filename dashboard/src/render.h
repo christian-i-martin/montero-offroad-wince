@@ -8,7 +8,7 @@
  * and the address at the bottom right, each 2/6 wide. Icons are drawn on a pixel grid for the
  * low-resolution screen; graphs are lines through every sample. Day and night colours follow the
  * sun. A button at the right end of the header opens the car info page (fixed facts about the
- * car in 16 tiles), whose Back button returns to the dashboard.
+ * car: a side bar of categories, up to 9 tiles each), whose Back button returns to the dashboard.
  * Layout and colours follow the design canvas; text is UTF-8. Portable C. */
 #ifndef RENDER_H
 #define RENDER_H
@@ -55,8 +55,13 @@ typedef struct {
 
 void render_dashboard(const Canvas *c, const DashModel *m);
 
-/* Car info page: plate, fuel, clearances, angles, tyres and other fixed facts about the car. */
-void render_carinfo(const Canvas *c, const DashModel *m);
+/* Car info page: fixed facts about the car. A side bar on the left picks the category; its tiles
+ * fill the rest (General: plate, fuel, engine, gearbox, tyres, weight; Size and clearance:
+ * clearances, angles, size; Fluids: types, amounts and change intervals). */
+enum { CARINFO_GENERAL, CARINFO_SIZE, CARINFO_FLUIDS, CARINFO_CATEGORIES };
+void render_carinfo(const Canvas *c, const DashModel *m, int category);
+/* The category whose side bar button is at (x, y), or -1. */
+int render_carinfo_category_hit(int x, int y);
 /* 1 when (x, y) is on the car info button in the dashboard's header. */
 int render_carinfo_button_hit(int x, int y);
 /* 1 when (x, y) is on the car info page's Back button. */
