@@ -1,15 +1,14 @@
-MONTERO DASHBOARD 0.5.0
+MONTERO DASHBOARD 0.5.2
 
 What it is
   A one-page off-road dashboard that the head unit's NAV button opens instead of
   the navigation program. The map of where the car is fills the whole screen;
   the readings sit on see-through panels over it: a bar at the top (clock, GPS,
   headlights, sunset or sunrise, and the car info button), speed (current,
-  average and top) and
-  elevation with a graph of the last 20 km on the left, outside temperature,
-  pressure and battery with small graphs on the right, the heading at the
-  bottom left and the address (road, barangay, city and province) at the
-  bottom right.
+  average and top) and elevation with a graph of the last climbs and descents
+  on the left, outside temperature, pressure and battery with small graphs on
+  the right, the heading at the bottom left and the address (road, barangay,
+  city and province) at the bottom right.
   Day and night colours follow the sun: dark from sunset to sunrise, light
   from sunrise to sunset, worked out from the GPS position and time. Until GPS
   has given both (just after starting), the headlights decide.
@@ -30,6 +29,12 @@ Install
   4. Put the card back, restart the head unit normally, press NAV.
 
 Using it
+  The graphs use their whole width from the start; the small note above the
+  outside, pressure and battery graphs says how much time they cover (for
+  example "6 min") until they hold their full span (3 h, 1 h, 30 min). The
+  elevation graph adds a point each time the elevation has gone 10 m up or
+  down while driving and keeps the last 20; on a level road or while parked it
+  does not change. Its note says how long ago its oldest point was taken.
   It updates once a second. Hold the clock (top left) for 2 seconds for the
   menu: Time zone, Open file manager (Total Commander, if it was included),
   Close dashboard, Back. Pressing NAV again brings the dashboard back.

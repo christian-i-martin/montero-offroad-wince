@@ -104,7 +104,6 @@ static void update_speed(DashModel *m, const DashInputs *in, double dt, unsigned
         double metres = speed / 3.6 * dt;
         m->moving_m += metres;
         m->moving_s += dt;
-        m->elev_dist_m += metres;
     }
     m->speed_sum += m->speed_kmh;
     m->speed_n++;
@@ -177,16 +176,20 @@ static void update_elevation(DashModel *m, const DashInputs *in, unsigned now)
         m->elev_src = SRC_NONE;
     }
 
+    /* the graph: the first value, then a point each time the elevation is 10 m above or below the
+     * last point while the car moves (2 km/h and up, as the speed panel counts it) */
     if (m->elev_src != SRC_NONE) {
+        float last = 0.0f;
+        if (m->elevation.count == 1 && m->elev_graph_src != m->elev_src)
+            series_init(&m->elevation, ELEVATION_POINTS); /* the first point came from the car's sensor before
+                                                           * GPS (or the other way): take it again, no false step */
         if (m->elevation.count == 0) {
             series_push(&m->elevation, m->elev_m, now);
-            m->elev_dist_m = 0;
-        } else if (m->elev_dist_m >= ELEVATION_EVERY_M) {
+            m->elev_graph_src = m->elev_src;
+        } else if (m->have_speed && m->speed_kmh > 0.0f &&
+                 series_get(&m->elevation, m->elevation.count - 1, &last, NULL) &&
+                 (m->elev_m - last >= ELEVATION_STEP_M || last - m->elev_m >= ELEVATION_STEP_M))
             series_push(&m->elevation, m->elev_m, now);
-            m->elev_dist_m -= ELEVATION_EVERY_M;
-            if (m->elev_dist_m >= ELEVATION_EVERY_M)
-                m->elev_dist_m = 0;
-        }
     }
 }
 

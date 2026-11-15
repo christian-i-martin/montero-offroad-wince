@@ -297,27 +297,32 @@ static void centred(const Canvas *c, int x, int w, int baseline, int font, unsig
 /* ---------------------------------------------------------------- graphs */
 
 /* Graph of a series as a line through every sample (straight pieces: a curve smoothed through
- * averaged points hid short changes, so the graphs looked flat on the car). Time series are placed
- * by age over window_ms (newest at the right edge); by_index series are evenly spaced per sample.
- * The first value is drawn flat from the left edge, so the graph fills its width from the first
- * sample on. The value range is at least min_span. area graphs are filled below the line and have
- * a base line. */
+ * averaged points hid short changes). The samples there are always span the whole width, oldest at
+ * the left edge and newest at the right: time series by their time (only the last window_ms),
+ * by_index series evenly. Until a graph's window is full it is therefore stretched over the samples
+ * it has; placed by age over the full window, a short history sat in the last few pixels at the
+ * right and the graph looked flat. A single sample is a flat line across. The value range is at
+ * least min_span. area graphs are filled below the line and have a base line. */
 static void chart(const Canvas *c, const Theme *t, const Series *s, Box b, unsigned now, unsigned window_ms,
                   float min_span, unsigned rgb, int area, int by_index)
 {
     DPoint p[SERIES_MAX + 3];
     float v, lo = 0, hi = 0;
-    unsigned tick;
-    int i, n = 0, used = 0, bottom = b.y + b.h - 1;
+    unsigned tick, first = 0, last = 0, span;
+    int i, n = 0, used = 0, bottom = b.y + b.h - 1, right = b.x + b.w - 1;
 
     for (i = 0; i < s->count; i++) {
         series_get(s, i, &v, &tick);
         if (!by_index && now - tick > window_ms)
             continue;
+        if (used == 0)
+            first = tick;
+        last = tick;
         if (used == 0 || v < lo) lo = v;
         if (used == 0 || v > hi) hi = v;
         used++;
     }
+    span = last - first;
     if (area)
         c->fill_rect(c->ctx, b.x, bottom, b.w, 1, t->line);
     if (used == 0) {
@@ -334,12 +339,14 @@ static void chart(const Canvas *c, const Theme *t, const Series *s, Box b, unsig
         series_get(s, i, &v, &tick);
         if (!by_index && now - tick > window_ms)
             continue;
-        p[n].x = by_index ? b.x + b.w - 1 - iround((double)(s->count - 1 - i) * (b.w - 1) / (s->cap - 1))
-                          : b.x + b.w - 1 - iround((double)(now - tick) * (b.w - 1) / window_ms);
+        if (by_index)
+            p[n].x = s->count < 2 ? right : right - iround((double)(s->count - 1 - i) * (b.w - 1) / (s->count - 1));
+        else
+            p[n].x = span == 0 ? right : right - iround((double)(last - tick) * (b.w - 1) / span);
         p[n].y = b.y + 2 + iround((hi - v) / (hi - lo) * (b.h - 5));
         n++;
     }
-    p[1].x = b.x;
+    p[1].x = b.x; /* the same point as the first sample, except when there is only one */
     p[1].y = p[2].y;
     if (area) {
         p[0].x = b.x;
@@ -349,6 +356,54 @@ static void chart(const Canvas *c, const Theme *t, const Series *s, Box b, unsig
         c->polygon(c->ctx, p, n + 1, t->area);
     }
     c->polyline(c->ctx, p + 1, n - 1, 2, rgb);
+}
+
+/* A time span for a graph's note: "3 min" (at least 1), "1.5 h", "2 h". */
+static void span_text(char *buf, int size, unsigned span)
+{
+    unsigned minutes = (span + 30000u) / 60000u, tenths = (span + 180000u) / 360000u;
+    if (minutes < 60)
+        snprintf(buf, (size_t)size, "%u min", minutes ? minutes : 1u);
+    else if (tenths % 10)
+        snprintf(buf, (size_t)size, "%u.%u h", tenths / 10, tenths % 10);
+    else
+        snprintf(buf, (size_t)size, "%u h", tenths / 10);
+}
+
+/* The note over a time graph: its window (full) once the samples fill it, otherwise the time from
+ * the oldest to the newest sample ("3 min", "1.5 h"); NULL while there is a single sample. */
+static const char *time_note(char *buf, int size, const Series *s, unsigned now, unsigned window_ms,
+                             unsigned every_ms, const char *full)
+{
+    unsigned tick, first = 0, last = 0, span;
+    int i, used = 0;
+
+    for (i = 0; i < s->count; i++) {
+        series_get(s, i, NULL, &tick);
+        if (now - tick > window_ms)
+            continue;
+        if (used++ == 0)
+            first = tick;
+        last = tick;
+    }
+    if (used < 2)
+        return NULL;
+    span = last - first;
+    if (span + every_ms >= window_ms)
+        return full;
+    span_text(buf, size, span);
+    return buf;
+}
+
+/* The note over the elevation graph (a point per 10 m of climb or descent, the last 20): how long
+ * ago its oldest point was taken ("25 min"); NULL while there is a single point. */
+static const char *elevation_note(char *buf, int size, const Series *s, unsigned now)
+{
+    unsigned tick;
+    if (s->count < 2 || !series_get(s, 0, NULL, &tick))
+        return NULL;
+    span_text(buf, size, now - tick);
+    return buf;
 }
 
 /* ---------------------------------------------------------------- header */
@@ -500,7 +555,8 @@ static void draw_elevation(const Canvas *c, const Theme *t, const DashModel *m)
     if (m->elev_src == SRC_CAR)
         panel_header(c, t, x, y, w, "ELEVATION", "Car sensor", "Car", t->text);
     else
-        panel_header(c, t, x, y, w, "ELEVATION", "20 km", NULL, t->muted);
+        panel_header(c, t, x, y, w, "ELEVATION", elevation_note(buf, sizeof buf, &m->elevation, m->now_ms), NULL,
+                     t->muted);
     if (m->elev_src != SRC_NONE)
         fmt_commas(buf, sizeof buf, iround(m->elev_m));
     else
@@ -543,12 +599,13 @@ static void small_graph(const Canvas *c, const Theme *t, const DashModel *m, con
 
 static void draw_outside(const Canvas *c, const Theme *t, const DashModel *m, int y, int h)
 {
-    char buf[40], brief[24];
+    char buf[40], brief[24], note[16];
     if (m->have_outside)
         snprintf(buf, sizeof buf, "%d", m->outside_c);
     else
         strcpy(buf, "--");
-    small_panel(c, t, y, h, "OUTSIDE", "3 h", buf, DEG "C");
+    small_panel(c, t, y, h, "OUTSIDE", time_note(note, sizeof note, &m->outside, m->now_ms, 10800000u, OUTSIDE_EVERY_MS, "3 h"),
+                buf, DEG "C");
     if (m->have_temp_change) {
         int d = iround(m->temp_change), minutes = (int)(m->temp_span_s / 60u);
         char span[16];
@@ -570,13 +627,14 @@ static void draw_outside(const Canvas *c, const Theme *t, const DashModel *m, in
 
 static void draw_pressure(const Canvas *c, const Theme *t, const DashModel *m, int y, int h)
 {
-    char buf[16];
+    char buf[16], note[16];
     int sx = RIGHT_X + PAD, sw = SIDE_W - 2 * PAD;
     if (m->have_pressure)
         fmt_commas(buf, sizeof buf, m->pressure_hpa);
     else
         strcpy(buf, "--");
-    small_panel(c, t, y, h, "PRESSURE", "1 h", buf, "hPa");
+    small_panel(c, t, y, h, "PRESSURE", time_note(note, sizeof note, &m->pressure, m->now_ms, 3600000u, PRESSURE_EVERY_MS, "1 h"),
+                buf, "hPa");
     switch (m->weather) {
     case WEATHER_FALLING_FAST: text_fit(c, sx, y + 70, FONT_SMALL, t->warn, sw, "Falling fast", "Falling"); break;
     case WEATHER_FALLING: text_fit(c, sx, y + 70, FONT_SMALL, t->text, sw, "Falling", NULL); break;
@@ -591,7 +649,7 @@ static void draw_pressure(const Canvas *c, const Theme *t, const DashModel *m, i
 
 static void draw_battery(const Canvas *c, const Theme *t, const DashModel *m, int y, int h)
 {
-    char buf[16];
+    char buf[16], note[16];
     const char *status = NULL, *brief = NULL;
     unsigned rgb = t->text;
 
@@ -606,7 +664,8 @@ static void draw_battery(const Canvas *c, const Theme *t, const DashModel *m, in
         snprintf(buf, sizeof buf, "%d.%d", dv / 10, dv % 10);
     } else
         strcpy(buf, "--");
-    small_panel(c, t, y, h, "BATTERY", "30 min", buf, "V");
+    small_panel(c, t, y, h, "BATTERY", time_note(note, sizeof note, &m->battery, m->now_ms, 1800000u, BATTERY_EVERY_MS, "30 min"),
+                buf, "V");
     if (status)
         text_fit(c, RIGHT_X + PAD, y + 70, FONT_SMALL, rgb, SIDE_W - 2 * PAD, status, brief);
     small_graph(c, t, m, &m->battery, y, h, 1800000u, 0.8f);

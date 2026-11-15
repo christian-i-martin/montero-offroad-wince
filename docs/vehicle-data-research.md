@@ -506,7 +506,7 @@ USB serial adapter would need a Windows CE driver added. Two built-in routes avo
 
 ## Dashboard
 
-`dashboard/` (version 0.5.0, **built, not run on the car yet**; 0.1.0 ran, see "First run" below) is
+`dashboard/` (version 0.5.2, **built, not run on the car yet**; 0.1.0 ran, see "First run" below) is
 the dashboard from the map-background design canvas
 (https://claude.ai/artifact/FkFvhi7mSFDTMhACtCK7ST, private; versions 0.1 to 0.3 followed the earlier
 column layout of https://claude.ai/artifact/9WDQyDaPa6RprDPPk3ST8x). It is a complete SD `Navigation`
@@ -528,14 +528,27 @@ shown (20 px in the header, 14 to 16 px in panels): whole-pixel corners, 2 px st
 Graphs are a line through every sample (straight pieces). 0.4 drew smooth waves instead: the
 samples were averaged into 12 points and joined by a monotone cubic curve, but the averaging hid
 short changes (a 1 hPa dip lasting a few samples moved the line 1 px instead of 2, a change of one
-sample not at all), so the user saw flat lines and asked for lines again in 0.5. Every graph draws
-its first value flat from the left edge, so it fills its width from the first sample on
-("Collecting data" only while there is none).
+sample not at all), so the user saw flat lines and asked for lines again in 0.5. The lines still
+looked flat on the car in 0.5.0 (elevation from 200 to 230 m drawn as a straight line): each graph
+was laid over its full window (20 km, 30 min, 1 h, 3 h), so a short history sat in the last few
+pixels at the right (the 80 elevation points are 1.4 px apart, so 4 points over the first 750 m
+took 4 px) and the rest was the flat line drawn from the first value. Since 0.5.1 the samples there
+are always span the whole width, oldest at the left edge and newest at the right; the note over a
+time graph says what it covers until its window is full ("6 min", "1.5 h"), and over the elevation
+graph how long ago its oldest point was taken. A single sample is a flat line across, and
+"Collecting data" shows only while there is none. Since 0.5.2 the elevation graph is no longer a
+distance profile (a point every 250 m, 80 points, 20 km): it gets a point each time the elevation
+has changed by 10 m from the last point, only while the car moves (2 km/h and up; GPS height drifts
+by several metres when parked), and keeps the last 20 points, evenly spaced (the user's choice). A
+level road adds nothing. While the graph has only its first point, that point is taken again when
+the height source changes (the car's sensor before GPS is ready, then GPS), so the graph does not
+start with a false step. The
+height of a change was never the problem: a 30 m climb moves the elevation line about 38 px.
 
 | Panel | Source | Rule |
 |---|---|---|
 | Pressure (right column), graph of 1 h | CarInfo `0x21` | sampled every 30 s; "weather" trend from sea-level pressure (needs GPS altitude) over at least 1 h, scaled to 3 h: 1 hPa = falling or rising, 3 hPa = falling fast |
-| Elevation (left column), graph of 20 km | GPS altitude, 10-second average | car's barometric elevation plus the last GPS-minus-car difference when GPS has no fix ("Car sensor", or "Car" when that does not fit); climb rate over about a minute; a graph point every 250 m |
+| Elevation (left column), graph of the last 20 changes of 10 m | GPS altitude, 10-second average | car's barometric elevation plus the last GPS-minus-car difference when GPS has no fix ("Car sensor", or "Car" when that does not fit); climb rate over about a minute; a graph point each time the elevation is 10 m above or below the last point while moving, the last 20 kept, the note saying how long ago the oldest was taken |
 | Outside (right column), graph of 3 h | CarInfo `0x31` | sampled every 90 s; change shown after 30 min |
 | Heading (bottom left, 2/6) | GPS course above 6 km/h (back below 4 km/h) | otherwise the car's 8-point compass (`0x11`); a compass tape (2.4 px per degree, ticks every 5 degrees, the eight points as letters) under a fixed mark, then the point and the degrees ("Car compass": the point only) |
 | Battery (right column), graph of 30 min | CarInfo `0x40` | 13.2 V and up charging, 12.2 to 13.2 V not charging, below 12.2 V low, 14.8 V and up too high (low and too high in the warning colour) |
