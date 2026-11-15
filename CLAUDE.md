@@ -34,12 +34,13 @@ The repository root mirrors the SD card root, plus reference material:
 - `dashboard/`: the dashboard (the future `Navigation.exe`). `src/model.c` (what is shown: GPS-first
   elevation and heading with car fallbacks, speeds, histories, trends, day and night colours from
   the sun), `src/render.c` (the 800 x 480 layout: the map across the whole screen under
-  semi-transparent panels, pixel-grid icons, smooth graphs; drawn through a small `Canvas`
-  interface) and `src/sun.c` (sunset) are portable C; `src/dash.c` is the Windows CE program (GDI
+  semi-transparent panels, pixel-grid icons, line graphs, and the car info page behind the
+  header's car button; drawn through a small `Canvas` interface) and `src/sun.c` (sunset) are portable C; `src/dash.c` is the Windows CE program (GDI
   drawing into a 16-bit DIB back buffer, GPS thread, bus client copied from the probe). `fonts/`
   holds the Barlow TTFs (SIL OFL) shipped next to the exe. The agreed design is the design canvas
   linked in the research doc's "Dashboard" section: panels are tinted, never blurred (processor
-  time), icons are drawn on a pixel grid for the low-resolution screen, graphs are smooth curves,
+  time), icons are drawn on a pixel grid for the low-resolution screen, graphs are lines through
+  every sample (0.4's smooth curves averaged short changes away), times are 12-hour with AM/PM,
   and the map starts at the highest zoom its files hold. `src/map.c` (offline map: reads `*.pack`
   files of the dark and light styles, composes the view, tints panels) and `src/pngdec.c` (PNG decoding through the vendored
   `third_party/stb_image.h`) are portable C too, and so is `src/addr.c` (offline address: reads the
@@ -90,7 +91,7 @@ Dashboard build and checks (same Docker image):
 ```sh
 ./tools/build_dashboard.sh                  # -> dist/dashboard/Navigation/ (adds Total Commander if built)
 python3 -m unittest tests.test_dashboard -v # model, sun, drawing calls, SVG previews (host C compiler)
-DASHBOARD_PREVIEW_DIR=/some/new/dir python3 -m unittest tests.test_dashboard   # keep the 5 previews
+DASHBOARD_PREVIEW_DIR=/some/new/dir python3 -m unittest tests.test_dashboard   # keep the 7 previews
 ```
 
 The previews go through the same `render.c` with text widths read from the Barlow files, so they

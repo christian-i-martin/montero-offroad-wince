@@ -486,7 +486,8 @@ static void test_colours(void)
     CHECK(m.night && m.night_src == SRC_GPS && !m.lights_on);
     g_texts[0] = '\0';
     render_dashboard(&g_rec, &m);
-    CHECK(strstr(g_texts, "Sunrise 08:") != NULL && strstr(g_texts, "Headlights on") == NULL);
+    CHECK(strstr(g_texts, "|Sunrise 8:0") != NULL && strstr(g_texts, " AM|") != NULL); /* 12-hour times */
+    CHECK(strstr(g_texts, "Headlights on") == NULL);
 
     reset();                                /* 06:00: before sunrise */
     in.hour = 6; in.gps.utc_seconds = 6 * 3600;
@@ -505,34 +506,57 @@ static void test_colours(void)
     CHECK(!m.night && m.night_src == SRC_GPS);
 }
 
-/* The elevation graph is a smooth curve that follows the data without overshooting it. */
-static void test_smooth_graph(void)
+/* Graphs are lines through every sample, so a change of a single sample shows (the earlier smooth
+ * curve averaged such changes away). */
+static void test_graph_lines(void)
 {
-    int i, rising = 1, lo = 1000, hi = 0;
+    int i, top = 1000, at_top = 0;
 
     reset();
     step(1);
     series_init(&m.elevation, ELEVATION_POINTS);
-    for (i = 0; i < ELEVATION_POINTS; i++)   /* steadily up, with a wobble */
-        series_push(&m.elevation, 500.0f + 4.0f * i + (i % 2 ? 3.0f : 0.0f), (unsigned)i);
+    for (i = 0; i < ELEVATION_POINTS; i++)   /* flat, with one sample 60 m higher */
+        series_push(&m.elevation, i == 40 ? 560.0f : 500.0f, (unsigned)i);
     g_curve_n = 0;
     render_dashboard(&g_rec, &m);
-    CHECK(g_curve_n > 20);                   /* many short pieces: a curve, not a line per sample */
-    for (i = 1; i < g_curve_n; i++)
-        if (g_curve[i].y > g_curve[i - 1].y || g_curve[i].x < g_curve[i - 1].x)
-            rising = 0;
-    CHECK(rising && g_curve[0].x == 20 && g_curve[g_curve_n - 1].x == 132);
-
-    series_init(&m.elevation, ELEVATION_POINTS);
-    for (i = 0; i < ELEVATION_POINTS; i++)   /* a single peak in the middle */
-        series_push(&m.elevation, 900.0f - (float)((i - 40) * (i - 40)), (unsigned)i);
-    g_curve_n = 0;
-    render_dashboard(&g_rec, &m);
+    CHECK(g_curve_n == ELEVATION_POINTS + 1); /* the flat start at the left edge, then every sample */
     for (i = 0; i < g_curve_n; i++) {
-        if (g_curve[i].y < lo) lo = g_curve[i].y;
-        if (g_curve[i].y > hi) hi = g_curve[i].y;
+        if (g_curve[i].y < top) {
+            top = g_curve[i].y;
+            at_top = 0;
+        }
+        if (g_curve[i].y == top)
+            at_top++;
     }
-    CHECK(g_curve_n > 20 && lo >= 310 && hi <= 361); /* never above the peak or below the lowest value */
+    CHECK(top == 310 && at_top == 1);        /* the one high sample at the top of the graph */
+    CHECK(g_curve[0].x == 20 && g_curve[0].y == 361 && g_curve[g_curve_n - 1].x == 132);
+}
+
+/* The car info page: header, the 16 tiles with the plate, Back; the header button that opens it. */
+static void test_carinfo(void)
+{
+    static const char head[] = "Back|Mitsubishi Montero Sport|2016 \xC2\xB7 2.4 diesel 4x2|12:00 PM|";
+
+    reset();
+    step(1);
+    g_texts[0] = '\0';
+    g_bad = 0;
+    render_carinfo(&g_rec, &m);
+    CHECK(g_bad == 0);
+    CHECK(strncmp(g_texts, head, sizeof head - 1) == 0);
+    CHECK(strstr(g_texts, "|N|D|E| |4|3|9|1|") != NULL); /* the plate, letter by letter */
+    CHECK(strstr(g_texts, "|700|mm|Maximum, at walking pace|") != NULL);
+    CHECK(strstr(g_texts, "|265/60 R18|18 in alloy wheels|") != NULL);
+    CHECK(strstr(g_texts, "|4x2|Rear wheels, 8-speed auto|") != NULL);
+    CHECK(strstr(g_texts, "|2,710|kg|Fully loaded maximum|") != NULL);
+    m.night = 1;
+    g_bad = 0;
+    render_carinfo(&g_rec, &m);
+    CHECK(g_bad == 0);
+    CHECK(render_carinfo_back_hit(40, 20) && !render_carinfo_back_hit(300, 20) && !render_carinfo_back_hit(40, 100));
+    CHECK(render_carinfo_button_hit(760, 20) && !render_carinfo_button_hit(600, 20));
+    CHECK(!render_carinfo_button_hit(760, 100));
+    CHECK(!render_clock_hit(760, 20));       /* the button is not the clock */
 }
 
 static void test_render(void)
@@ -549,7 +573,8 @@ static void test_render(void)
     CHECK(strstr(g_texts, "|988|hPa|") != NULL);
     CHECK(strstr(g_texts, "|14.0|V|") != NULL);
     CHECK(strstr(g_texts, "|SE|127\xC2\xB0|") != NULL && strstr(g_texts, "GPS course") != NULL);
-    CHECK(strstr(g_texts, "Sunset 15:5") != NULL);
+    CHECK(strncmp(g_texts, "12:03|PM|", 9) == 0);           /* 12-hour clock, drawn first */
+    CHECK(strstr(g_texts, "|Sunset 3:5") != NULL && strstr(g_texts, " PM, 3 h ") != NULL);
     CHECK(strstr(g_texts, "GPS 9 sats") != NULL);
     CHECK(strstr(g_texts, "No car data") == NULL && strstr(g_texts, "Headlights on") == NULL);
 
@@ -561,7 +586,8 @@ static void test_render(void)
     g_bad = 0;
     render_dashboard(&g_rec, &m);
     CHECK(g_bad == 0);
-    CHECK(strstr(g_texts, "No GPS fix") && strstr(g_texts, "No car data") && strstr(g_texts, "Headlights on"));
+    CHECK(strstr(g_texts, "Waiting for GPS") && strstr(g_texts, "No car data") && strstr(g_texts, "Headlights on"));
+    CHECK(strstr(g_texts, "|Sunset 3:5") != NULL && strstr(g_texts, "min left") == NULL); /* shortened: no room */
     CHECK(strstr(g_texts, "|km/h|--|") != NULL);
 
     in.car_fresh = 1;                       /* the car's sensor: named, shortened when it does not fit */
@@ -611,7 +637,8 @@ int main(void)
     test_clock();
     test_sun();
     test_colours();
-    test_smooth_graph();
+    test_graph_lines();
+    test_carinfo();
     test_render();
     test_speed_and_map();
     test_address_and_graphs();

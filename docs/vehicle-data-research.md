@@ -506,28 +506,31 @@ USB serial adapter would need a Windows CE driver added. Two built-in routes avo
 
 ## Dashboard
 
-`dashboard/` (version 0.4.0, **built, not run on the car yet**; 0.1.0 ran, see "First run" below) is
-the one-page dashboard from the map-background design canvas
+`dashboard/` (version 0.5.0, **built, not run on the car yet**; 0.1.0 ran, see "First run" below) is
+the dashboard from the map-background design canvas
 (https://claude.ai/artifact/FkFvhi7mSFDTMhACtCK7ST, private; versions 0.1 to 0.3 followed the earlier
 column layout of https://claude.ai/artifact/9WDQyDaPa6RprDPPk3ST8x). It is a complete SD `Navigation`
 folder: `Navigation.exe`, `fonts/` (Barlow), `README.txt`, and `TotalCommander/cecmd.exe` when Total
 Commander was built. The map's files go in a separate `Map` folder at the SD card root (see "Map"
-and "Address" below).
+and "Address" below). Besides the dashboard page there is a car info page with fixed facts about
+the car (see "Car info page" below), opened from a button in the header.
 
 Layout (800 x 480, `dashboard/src/render.c`): the offline map fills the whole screen, and every
 widget sits on its own semi-transparent panel over it. The panels are tinted, not blurred, to spare
-the processor (the user's rule): the panel colour is mixed into the map's pixels at 80 % by day and
-74 % at night, with no shadows. A 40 px header runs across the top; side columns are 1/6 of the
+the processor (the user's rule): the panel colour is mixed into the map's pixels at 90 % by day and
+at night (the user's choice for 0.5; 0.4 used 80 % and 74 %), with no shadows. A 40 px header runs across the top; side columns are 1/6 of the
 screen wide (133 px): speed and elevation on the left, outside temperature, pressure and battery on
 the right; the heading panel (bottom left) and the address panel (bottom right) are 2/6 wide
 (266 px, 88 px tall); the zoom buttons, scale bar and map credit sit at the bottom centre, a
 north-up mark at the top right of the map. Icons are drawn on a pixel grid at the size they are
 shown (20 px in the header, 14 to 16 px in panels): whole-pixel corners, 2 px strokes, slopes of
 45 degrees or 2:1, so they stay recognizable on the low-resolution screen without smoothing.
-Graphs are smooth waves: the samples are averaged into at most 12 points, joined by a monotone
-cubic curve (it never rises above or dips below the two points it joins, so it invents no peaks)
-and drawn as a polyline of short pieces. Every graph draws its first value flat from the left
-edge, so it fills its width from the first sample on ("Collecting data" only while there is none).
+Graphs are a line through every sample (straight pieces). 0.4 drew smooth waves instead: the
+samples were averaged into 12 points and joined by a monotone cubic curve, but the averaging hid
+short changes (a 1 hPa dip lasting a few samples moved the line 1 px instead of 2, a change of one
+sample not at all), so the user saw flat lines and asked for lines again in 0.5. Every graph draws
+its first value flat from the left edge, so it fills its width from the first sample on
+("Collecting data" only while there is none).
 
 | Panel | Source | Rule |
 |---|---|---|
@@ -539,8 +542,22 @@ edge, so it fills its width from the first sample on ("Collecting data" only whi
 | Map (whole screen, behind the panels) | GPS position, `\SD\Map\*.pack`, `\SD\Map\Day\*.pack` | north-up offline map with the car at (400, 260), the middle below the header; arrow along the GPS course while the heading comes from GPS, otherwise a dot (grey without a fix); starts at the highest zoom level the files hold (the user's rule: 15 with the zoom 15 pack, else 14) and goes back to it when the map style changes, unless +/- were used; dark map at half brightness at night, light map (`Map\Day`) by day, the dark one by day when there is no light one |
 | Address (bottom right, 2/6) | GPS position, `\SD\Map\*.addr` | nearest named road within 50 m (else "No named road nearby"), then one line: "Brgy." and the barangay (else "Near" and the nearest named place), a middle dot, city and province (the province left out when the line is too wide); looked up on its own thread after about 15 m or 30 s; the last address stays, marked "Last GPS position", without a fix; never logged |
 | Speed (left column, top) | GPS | current speed large (a smaller font for three digits), average (counts only above 3 km/h) and top speed (highest median of three readings) under it, both since the dashboard started and not saved. The model still keeps the 10-minute speed series; 0.4 does not draw it |
-| Header (semi-transparent, over the map) | GPS time, bus | clock: GPS UTC time and date (1024-week rollover corrected), kept running on the tick count when the signal drops; the unit's clock only when its year is 2020 or later. Time zone: the menu choice (`dashboard-settings.txt`), else UTC+8 (`DEFAULT_UTC_OFFSET_MIN` in `dash.c`, the user's choice). The model can also derive it from the unit's clock or time-zone setting, but `dash.c` always passes a zone because both are unreliable on this unit. GPS status, "Headlights on" while the bus reports them (`0x52A` index 9 or `0x33` bit `0x04`), "No car data"; on the right sunset (with the time left) or sunrise from the last GPS position |
+| Header (semi-transparent, over the map) | GPS time, bus | clock: GPS UTC time and date (1024-week rollover corrected), kept running on the tick count when the signal drops; the unit's clock only when its year is 2020 or later. Time zone: the menu choice (`dashboard-settings.txt`), else UTC+8 (`DEFAULT_UTC_OFFSET_MIN` in `dash.c`, the user's choice). The model can also derive it from the unit's clock or time-zone setting, but `dash.c` always passes a zone because both are unreliable on this unit. Times are in 12-hour form with AM or PM (the user's choice, 0.5). GPS status ("Waiting for GPS" without a fix), "Headlights on" while the bus reports them (`0x52A` index 9 or `0x33` bit `0x04`), "No car data"; on the right sunset (with the time left; without it, or left out, when it would run into the items on the left) or sunrise from the last GPS position, then the car info button (an icon only: a car with an "i" badge) |
 | Day and night colours | GPS position and time; bus | dark from sunset to sunrise (the next sun event is sunrise), light from sunrise to sunset, checked every 10 s with the sunset time; the headlights decide only until GPS has given time and position (the unit's clock resets to 2012). Logged as `[colours] night, from sunset and sunrise` (or `from the headlights`) when it changes |
+
+Car info page (0.5, `render_carinfo` in `render.c`): opened with the button at the right end of the
+header, closed with Back at the top left; the same header bar (Back, "Mitsubishi Montero Sport",
+"2016 · 2.4 diesel 4x2", the time on the right) and 16 tiles in a 4 x 4 grid, each with a 24 px
+pixel-grid icon (the measured part in the accent colour), a name, a value and one detail line.
+Everything on it is fixed in the program: plate NDE 4391 (the user's), diesel (Euro 4), tank 68 L,
+2.4 L turbo 181 PS 430 Nm, wading 700 mm, ground clearance 218 mm, height 1,805 mm, width 1,815 mm,
+approach 30°, departure 24.2°, breakover 23.1°, turning circle 11.2 m, tyres 265/60 R18, pressure
+29 / 32 psi cold front / rear, 4x2 with the 8-speed automatic, gross weight 2,710 kg. The figures are
+Mitsubishi's published ones for this model, mostly from Australian Pajero Sport data because the
+Philippine sheet could not be read; tyre pressure and gross weight come from 4x4 and Australian
+sources and should be checked against the door-pillar sticker and the registration papers, and the
+gearbox and tyre size depend on the trim (not confirmed). The page draws no map, so it costs less
+than the dashboard; the model keeps updating behind it.
 
 Car data counts as current for 30 s after the last CarInfo reply, GPS for 3 s after the last RMC
 sentence. The bus client is the probe's: it joins as `TerminalA` (waits while another `TerminalA`

@@ -1,5 +1,6 @@
 /* Montero dashboard: replaces \SD\Navigation\Navigation.exe on the Skypine 6982E head unit
- * (Windows CE 6, ARM). One full-screen page; layout in render.c, logic in model.c.
+ * (Windows CE 6, ARM). Two full-screen pages: the dashboard, and the car info page opened with the
+ * car button at the right end of its header (Back returns). Layout in render.c, logic in model.c.
  *
  * Data sources (all read-only, see docs/vehicle-data-research.md):
  *   GPS       NMEA from COM1: at 38400 baud, opened for reading only
@@ -28,7 +29,7 @@
 #include "render.h"
 #include "sun.h"
 
-#define DASH_VERSION "0.4.0"
+#define DASH_VERSION "0.5.0"
 #define WINDOW_CLASS L"MonteroDashboard"
 #define WINDOW_TITLE L"GPS - Navigation" /* SP_MAIN.ini [NAVIGATION] TITLE */
 
@@ -126,6 +127,7 @@ static DWORD g_car_tick;           /* last CarInfo reply */
 static int g_lights;               /* last lights state seen on the bus */
 static DashModel g_model;
 static int g_menu, g_has_files;
+static int g_carinfo;             /* the car info page is shown instead of the dashboard */
 static WCHAR g_files_path[MAX_PATH];
 #define DEFAULT_UTC_OFFSET_MIN 480 /* UTC+8 until another time zone is chosen in the menu */
 static int g_tz_set = 1, g_tz_min = DEFAULT_UTC_OFFSET_MIN; /* time zone in use, minutes from UTC */
@@ -1114,9 +1116,13 @@ static void paint(HDC target)
     c.text = gdi_text;
     c.map = gdi_map;
     c.glass = g_back_bits ? gdi_glass : NULL;
-    render_dashboard(&c, &g_model);
-    if (g_menu)
-        render_menu(&c, &g_model, g_has_files, DASH_VERSION);
+    if (g_carinfo) {
+        render_carinfo(&c, &g_model);
+    } else {
+        render_dashboard(&c, &g_model);
+        if (g_menu)
+            render_menu(&c, &g_model, g_has_files, DASH_VERSION);
+    }
     BitBlt(target, 0, 0, SCREEN_W, SCREEN_H, g_back, 0, 0, SRCCOPY);
 }
 
@@ -1256,6 +1262,16 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpa
                 break;
             }
             }
+            InvalidateRect(hwnd, NULL, FALSE);
+        } else if (g_carinfo) {
+            if (render_carinfo_back_hit(x, y)) {
+                g_carinfo = 0;
+                log_line("[page] dashboard");
+                InvalidateRect(hwnd, NULL, FALSE);
+            }
+        } else if (render_carinfo_button_hit(x, y)) {
+            g_carinfo = 1;
+            log_line("[page] car info");
             InvalidateRect(hwnd, NULL, FALSE);
         } else if (render_map_hit(x, y) != MAPHIT_NONE && g_map.count > 0 && g_model.have_position) {
             map_step(render_map_hit(x, y) == MAPHIT_ZOOM_IN ? 1 : -1);

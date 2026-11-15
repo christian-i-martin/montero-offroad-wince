@@ -36,13 +36,17 @@ typedef struct {
     unsigned panel; int alpha;   /* semi-transparent panels: colour and strength (0 to 256) */
     unsigned solid;              /* opaque panels: the menu, and platforms that cannot mix colours */
     unsigned border, line, text, muted, accent, graph, cool, warn, area, spark, button, on_accent, outline;
+    unsigned plate;              /* the number plate's background on the car info page */
 } Theme;
-/* Day: light panels at 80 %; night: dark panels at 74 %, warm amber. accent is for text, graph for
- * lines and marks, cool for the car on the map, area for the filled part of the elevation graph. */
-static const Theme g_day = {0xE9E7DF, 0xFAFAF6, 205, 0xF4F4F0, 0xD5D7D3, 0xC6C9C5, 0x17202A, 0x4B5763, 0xB5400C,
-                            0xE8590C, 0x1971C2, 0xC92A2A, 0xF5DECD, 0x5E6B78, 0xE4E5E1, 0xFFFFFF, 0xFFFFFF};
-static const Theme g_night = {0x1E242A, 0x10141A, 189, 0x161B21, 0x2C3138, 0x3A414A, 0xEDE8DE, 0xA3ADB7, 0xF6A623,
-                              0xF6A623, 0x5BC0EB, 0xFF7849, 0x382F1F, 0x8A96A3, 0x232931, 0x14181C, 0x0B0E11};
+/* Day: light panels; night: dark panels, warm amber. Both mixed in at 90 % (230 of 256, the user's
+ * choice). accent is for text, graph for lines and marks, cool for the car on the map, area for the
+ * filled part of the elevation graph. */
+static const Theme g_day = {0xE9E7DF, 0xFAFAF6, 230, 0xF4F4F0, 0xD5D7D3, 0xC6C9C5, 0x17202A, 0x4B5763, 0xB5400C,
+                            0xE8590C, 0x1971C2, 0xC92A2A, 0xF5DECD, 0x5E6B78, 0xE4E5E1, 0xFFFFFF, 0xFFFFFF,
+                            0xFFFFFF};
+static const Theme g_night = {0x1E242A, 0x10141A, 230, 0x161B21, 0x2C3138, 0x3A414A, 0xEDE8DE, 0xA3ADB7, 0xF6A623,
+                              0xF6A623, 0x5BC0EB, 0xFF7849, 0x382F1F, 0x8A96A3, 0x232931, 0x14181C, 0x0B0E11,
+                              0x1A2027};
 
 /* Layout (design canvas): 10 px from the screen edges, 8 px between panels. */
 #define EDGE 10
@@ -161,9 +165,29 @@ static const signed char g_north[] = {3, 12, 1, 17, 11, 7, 11, 0};              
 static const signed char *const g_icons[ICON_COUNT] = {g_gps, g_sunset, g_sunrise, g_lights, g_warn, g_warn_mark,
                                                        g_up, g_down, g_flat, g_pin, g_plus, g_minus, g_north};
 
-static void icon(const Canvas *c, int kind, int x, int y, unsigned rgb)
+/* Header icons of the car info page and its button. Rings are drawn as pieces (no polygon has a
+ * hole), like the GPS icon. */
+static const signed char g_back[] = {6, 12, 3, 5, 10, 12, 17, 14, 15, 9, 10, 14, 5, 0};              /* 20 px */
+static const signed char g_clock[] = {                                                               /* 20 px */
+    4, 7, 2, 13, 2, 12, 4, 8, 4,        4, 13, 2, 18, 7, 16, 8, 12, 4,
+    4, 18, 7, 18, 13, 16, 12, 16, 8,    4, 18, 13, 13, 18, 12, 16, 16, 12,
+    4, 13, 18, 7, 18, 8, 16, 12, 16,    4, 7, 18, 2, 13, 4, 12, 8, 16,
+    4, 2, 13, 2, 7, 4, 8, 4, 12,        4, 2, 7, 7, 2, 8, 4, 4, 8,
+    R(9, 6, 2, 5), R(11, 9, 3, 2), 0};
+/* The car info button, 26 x 20 (drawn 1 px up): the front of a car with an "i" badge cut into its
+ * lower right corner. */
+static const signed char g_carbtn_car[] = {
+    4, 2, 2, 16, 2, 17, 4, 1, 4,        4, 1, 4, 4, 4, 4, 6, 0, 6,      4, 14, 4, 17, 4, 18, 6, 14, 6,
+    4, 0, 6, 16, 6, 14, 8, 0, 8,        R(0, 8, 2, 2),                  4, 5, 8, 14, 8, 12, 10, 5, 10,
+    R(0, 10, 12, 3), R(2, 13, 4, 2), 0};
+static const signed char g_carbtn_badge[] = {
+    4, 17, 8, 23, 8, 25, 10, 15, 10,    5, 15, 10, 19, 10, 19, 12, 14, 12, 14, 11,
+    5, 21, 10, 25, 10, 26, 11, 26, 12, 21, 12,                          R(14, 12, 12, 2),
+    5, 14, 14, 19, 14, 19, 18, 15, 18, 14, 17,                          5, 21, 14, 26, 14, 26, 17, 25, 18, 21, 18,
+    4, 15, 18, 25, 18, 23, 20, 17, 20, 0};
+
+static void icon_shape(const Canvas *c, const signed char *q, int x, int y, unsigned rgb)
 {
-    const signed char *q = g_icons[kind];
     while (*q) {
         DPoint p[16];
         int n = *q++, i;
@@ -173,6 +197,11 @@ static void icon(const Canvas *c, int kind, int x, int y, unsigned rgb)
         }
         c->polygon(c->ctx, p, n, rgb);
     }
+}
+
+static void icon(const Canvas *c, int kind, int x, int y, unsigned rgb)
+{
+    icon_shape(c, g_icons[kind], x, y, rgb);
 }
 
 static void warn_icon(const Canvas *c, const Theme *t, int x, int y)
@@ -267,98 +296,16 @@ static void centred(const Canvas *c, int x, int w, int baseline, int font, unsig
 
 /* ---------------------------------------------------------------- graphs */
 
-#define KNOTS 12
-#define CURVE_STEPS 6
-#define CURVE_MAX (1 + (KNOTS - 1) * CURVE_STEPS)
-
-/* A smooth curve through points sorted by x (n >= 1): they are averaged into at most KNOTS knots
- * (the first and the newest kept as they are), then joined by a monotone cubic curve
- * (Fritsch-Carlson), which never rises above or dips below the two knots it joins, so the waves
- * invent no peaks. Writes at most CURVE_MAX points and returns how many. */
-static int smooth_curve(const DPoint *p, int n, DPoint *out)
-{
-    double kx[KNOTS], ky[KNOTS], d[KNOTS], slope[KNOTS], x0, span, width;
-    int k = 0, i, j, o = 0;
-
-    if (n <= 0)
-        return 0;
-    x0 = p[0].x;
-    span = p[n - 1].x - x0;
-    if (n < 3 || span < 4.0) { /* too few points, or all in a few pixels: first and newest */
-        out[o++] = p[0];
-        if (n > 1)
-            out[o++] = p[n - 1];
-        return o;
-    }
-    width = span / (KNOTS - 1);
-    kx[k] = p[0].x;
-    ky[k] = p[0].y;
-    k++;
-    for (j = 1; j < KNOTS - 1; j++) {
-        double lo = x0 + (j - 0.5) * width, hi = x0 + (j + 0.5) * width, sx = 0, sy = 0;
-        int count = 0;
-        for (i = 1; i < n - 1; i++)
-            if (p[i].x >= lo && p[i].x < hi) {
-                sx += p[i].x;
-                sy += p[i].y;
-                count++;
-            }
-        if (count && sx / count > kx[k - 1] + 0.5 && sx / count < p[n - 1].x - 0.5) {
-            kx[k] = sx / count;
-            ky[k] = sy / count;
-            k++;
-        }
-    }
-    kx[k] = p[n - 1].x;
-    ky[k] = p[n - 1].y;
-    k++;
-
-    for (i = 0; i < k - 1; i++)
-        d[i] = (ky[i + 1] - ky[i]) / (kx[i + 1] - kx[i]);
-    slope[0] = d[0];
-    slope[k - 1] = d[k - 2];
-    for (i = 1; i < k - 1; i++)
-        slope[i] = d[i - 1] * d[i] <= 0.0 ? 0.0 : (d[i - 1] + d[i]) / 2.0;
-    for (i = 0; i < k - 1; i++) {
-        double a, b, s;
-        if (d[i] == 0.0) {
-            slope[i] = slope[i + 1] = 0.0;
-            continue;
-        }
-        a = slope[i] / d[i];
-        b = slope[i + 1] / d[i];
-        s = a * a + b * b;
-        if (s > 9.0) {
-            double scale = 3.0 / pow(s, 0.5); /* pow, not sqrt: only COREDLL functions already used on the car */
-            slope[i] = scale * a * d[i];
-            slope[i + 1] = scale * b * d[i];
-        }
-    }
-    out[o].x = iround(kx[0]);
-    out[o].y = iround(ky[0]);
-    o++;
-    for (i = 0; i < k - 1; i++) {
-        double h = kx[i + 1] - kx[i];
-        for (j = 1; j <= CURVE_STEPS; j++) {
-            double t = (double)j / CURVE_STEPS, t2 = t * t, t3 = t2 * t;
-            double y = (2 * t3 - 3 * t2 + 1) * ky[i] + (t3 - 2 * t2 + t) * h * slope[i] + (-2 * t3 + 3 * t2) * ky[i + 1] +
-                       (t3 - t2) * h * slope[i + 1];
-            out[o].x = iround(kx[i] + t * h);
-            out[o].y = iround(y);
-            o++;
-        }
-    }
-    return o;
-}
-
-/* Graph of a series as a smooth curve. Time series are placed by age over window_ms (newest at
- * the right edge); by_index series are evenly spaced per sample. The first value is drawn flat
- * from the left edge, so the graph fills its width from the first sample on. The value range is
- * at least min_span. area graphs are filled below the curve and have a base line. */
+/* Graph of a series as a line through every sample (straight pieces: a curve smoothed through
+ * averaged points hid short changes, so the graphs looked flat on the car). Time series are placed
+ * by age over window_ms (newest at the right edge); by_index series are evenly spaced per sample.
+ * The first value is drawn flat from the left edge, so the graph fills its width from the first
+ * sample on. The value range is at least min_span. area graphs are filled below the line and have
+ * a base line. */
 static void chart(const Canvas *c, const Theme *t, const Series *s, Box b, unsigned now, unsigned window_ms,
                   float min_span, unsigned rgb, int area, int by_index)
 {
-    DPoint p[SERIES_MAX + 1], curve[CURVE_MAX + 2];
+    DPoint p[SERIES_MAX + 3];
     float v, lo = 0, hi = 0;
     unsigned tick;
     int i, n = 0, used = 0, bottom = b.y + b.h - 1;
@@ -382,7 +329,7 @@ static void chart(const Canvas *c, const Theme *t, const Series *s, Box b, unsig
         lo = mid - min_span / 2.0f;
         hi = mid + min_span / 2.0f;
     }
-    n = 1; /* p[0]: the first value at the left edge */
+    n = 2; /* p[0]: the area's first corner, p[1]: the first value at the left edge */
     for (i = 0; i < s->count; i++) {
         series_get(s, i, &v, &tick);
         if (!by_index && now - tick > window_ms)
@@ -392,46 +339,81 @@ static void chart(const Canvas *c, const Theme *t, const Series *s, Box b, unsig
         p[n].y = b.y + 2 + iround((hi - v) / (hi - lo) * (b.h - 5));
         n++;
     }
-    if (n < 2)
-        return;
-    p[0].x = b.x;
-    p[0].y = p[1].y;
-    n = smooth_curve(p, n, curve);
-    if (area && n >= 2) {
-        curve[n].x = curve[n - 1].x;
-        curve[n].y = bottom;
-        curve[n + 1].x = b.x;
-        curve[n + 1].y = bottom;
-        c->polygon(c->ctx, curve, n + 2, t->area);
+    p[1].x = b.x;
+    p[1].y = p[2].y;
+    if (area) {
+        p[0].x = b.x;
+        p[0].y = bottom;
+        p[n].x = p[n - 1].x;
+        p[n].y = bottom;
+        c->polygon(c->ctx, p, n + 1, t->area);
     }
-    c->polyline(c->ctx, curve, n, 2, rgb);
+    c->polyline(c->ctx, p + 1, n - 1, 2, rgb);
 }
 
 /* ---------------------------------------------------------------- header */
 
-static void draw_header(const Canvas *c, const Theme *t, const DashModel *m)
+/* "2:05 PM": times are shown in the 12-hour form (the user's choice). */
+static void fmt_time12(char *buf, int size, int hour, int minute)
 {
-    char buf[64];
-    int x;
+    snprintf(buf, (size_t)size, "%d:%02d %s", (hour + 11) % 12 + 1, minute, hour < 12 ? "AM" : "PM");
+}
 
+/* The semi-transparent bar across the top, with its bottom line. */
+static void header_bar(const Canvas *c, const Theme *t)
+{
     if (c->glass)
         c->glass(c->ctx, 0, 0, SCREEN_W, HEADER_H, 0, t->panel, t->alpha);
     else
         c->fill_rect(c->ctx, 0, 0, SCREEN_W, HEADER_H, t->solid);
     c->fill_rect(c->ctx, 0, HEADER_H - 1, SCREEN_W, 1, t->border);
-    if (m->clock_valid)
-        snprintf(buf, sizeof buf, "%02d:%02d", m->hour, m->minute);
-    else
-        strcpy(buf, "--:--");
-    text(c, 16, 30, FONT_CLOCK, t->text, buf);
-    x = 16 + tw(c, FONT_CLOCK, buf) + 20;
+}
+
+/* The car info button at the right end of the header: an icon on an outlined pill, the whole
+ * header height and a little more to the left counting as the button. */
+#define CARBTN_W 46
+#define CARBTN_H 30
+#define CARBTN_X (SCREEN_W - 16 - CARBTN_W)
+#define CARBTN_Y ((HEADER_H - CARBTN_H) / 2)
+
+static void draw_carinfo_button(const Canvas *c, const Theme *t)
+{
+    if (c->glass)
+        c->glass(c->ctx, CARBTN_X, CARBTN_Y, CARBTN_W, CARBTN_H, CARBTN_H / 2, t->panel, t->alpha);
+    c->round_rect(c->ctx, CARBTN_X, CARBTN_Y, CARBTN_W, CARBTN_H, CARBTN_H / 2, NO_FILL, t->line);
+    icon_shape(c, g_carbtn_car, CARBTN_X + 10, CARBTN_Y + 4, t->text);
+    icon_shape(c, g_carbtn_badge, CARBTN_X + 10, CARBTN_Y + 4, t->accent);
+}
+
+int render_carinfo_button_hit(int x, int y)
+{
+    return x >= CARBTN_X - 8 && x < SCREEN_W && y >= 0 && y < HEADER_H + 4;
+}
+
+static void draw_header(const Canvas *c, const Theme *t, const DashModel *m)
+{
+    char buf[64], when[16], longer[64], shorter[40];
+    const char *sun = NULL;
+    int x, left_end, right = CARBTN_X - 12;
+
+    header_bar(c, t);
+    if (m->clock_valid) { /* the digits large, AM or PM beside them */
+        snprintf(buf, sizeof buf, "%d:%02d", (m->hour + 11) % 12 + 1, m->minute);
+        text(c, 16, 30, FONT_CLOCK, t->text, buf);
+        x = 16 + tw(c, FONT_CLOCK, buf) + 4;
+        text(c, x, 30, FONT_HEADER, t->text, m->hour < 12 ? "AM" : "PM");
+        x += tw(c, FONT_HEADER, m->hour < 12 ? "AM" : "PM") + 20;
+    } else {
+        text(c, 16, 30, FONT_CLOCK, t->text, "--:--");
+        x = 16 + tw(c, FONT_CLOCK, "--:--") + 20;
+    }
 
     if (m->gps_ok) {
         snprintf(buf, sizeof buf, "GPS %d sats", m->satellites);
         icon(c, ICON_GPS, x, 10, t->muted);
         text(c, x + 26, 25, FONT_HEADER, t->muted, buf);
     } else {
-        strcpy(buf, "No GPS fix");
+        strcpy(buf, "Waiting for GPS");
         icon(c, ICON_GPS, x, 10, t->warn);
         text(c, x + 26, 25, FONT_HEADER, t->text, buf);
     }
@@ -444,22 +426,35 @@ static void draw_header(const Canvas *c, const Theme *t, const DashModel *m)
     if (!m->car_ok) {
         warn_icon(c, t, x, 10);
         text(c, x + 26, 25, FONT_HEADER, t->text, "No car data");
+        x += 26 + tw(c, FONT_HEADER, "No car data") + 20;
     }
+    left_end = x - 20;
 
-    buf[0] = '\0';
-    if (!m->have_position)
-        strcpy(buf, "Sunset: waiting for GPS");
-    else if (m->sun_event == SUN_SUNSET && m->sun_minutes_left >= 60)
-        snprintf(buf, sizeof buf, "Sunset %02d:%02d, %d h %d min left", m->sun_hour, m->sun_minute,
-                 m->sun_minutes_left / 60, m->sun_minutes_left % 60);
-    else if (m->sun_event == SUN_SUNSET)
-        snprintf(buf, sizeof buf, "Sunset %02d:%02d, %d min left", m->sun_hour, m->sun_minute, m->sun_minutes_left);
-    else if (m->sun_event == SUN_SUNRISE)
-        snprintf(buf, sizeof buf, "Sunrise %02d:%02d", m->sun_hour, m->sun_minute);
-    if (buf[0]) {
-        int w = tw(c, FONT_HEADER, buf);
-        text(c, SCREEN_W - 16 - w, 25, FONT_HEADER, t->muted, buf);
-        icon(c, m->sun_event == SUN_SUNRISE ? ICON_SUNRISE : ICON_SUNSET, SCREEN_W - 16 - w - 26, 10, t->muted);
+    draw_carinfo_button(c, t);
+    /* sunset or sunrise before the button; without the time left, or not at all, when it would
+     * run into the items on the left */
+    longer[0] = shorter[0] = '\0';
+    if (!m->have_position) {
+        strcpy(longer, "Sunset: waiting for GPS");
+    } else if (m->sun_event != SUN_NONE) {
+        fmt_time12(when, sizeof when, m->sun_hour, m->sun_minute);
+        snprintf(shorter, sizeof shorter, "%s %s", m->sun_event == SUN_SUNRISE ? "Sunrise" : "Sunset", when);
+        if (m->sun_event == SUN_SUNSET && m->sun_minutes_left >= 60)
+            snprintf(longer, sizeof longer, "Sunset %s, %d h %d min left", when, m->sun_minutes_left / 60,
+                     m->sun_minutes_left % 60);
+        else if (m->sun_event == SUN_SUNSET)
+            snprintf(longer, sizeof longer, "Sunset %s, %d min left", when, m->sun_minutes_left);
+        else /* snprintf, not strcpy: GCC would import strcpy, which no program has used on the car */
+            snprintf(longer, sizeof longer, "%s", shorter);
+    }
+    if (longer[0] && right - tw(c, FONT_HEADER, longer) - 26 >= left_end + 16)
+        sun = longer;
+    else if (shorter[0] && right - tw(c, FONT_HEADER, shorter) - 26 >= left_end + 16)
+        sun = shorter;
+    if (sun) {
+        int w = tw(c, FONT_HEADER, sun);
+        text(c, right - w, 25, FONT_HEADER, t->muted, sun);
+        icon(c, m->sun_event == SUN_SUNRISE ? ICON_SUNRISE : ICON_SUNSET, right - w - 26, 10, t->muted);
     }
 }
 
@@ -877,6 +872,191 @@ void render_dashboard(const Canvas *c, const DashModel *m)
         message(c, t, CAR_Y + 56, "No map for this area", NULL);
 }
 
+/* ---------------------------------------------------------------- car info page */
+
+/* Tile icons, 24 px, on the same pixel grid as the others. Each has a muted part and, where the
+ * tile is a measurement, an accent part showing what is measured (the water line, the gap under
+ * the car, the slope). The car seen from the side, 20 x 13 (CAR_TOP without wheels for wading),
+ * and a shorter one, 16 x 11, for the three angles. */
+#define CAR_TOP(dx, dy) \
+    4, (dx) + 4, (dy), (dx) + 12, (dy), (dx) + 13, (dy) + 2, (dx) + 3, (dy) + 2, \
+    4, (dx) + 3, (dy) + 2, (dx) + 5, (dy) + 2, (dx) + 5, (dy) + 4, (dx) + 2, (dy) + 4, \
+    4, (dx) + 11, (dy) + 2, (dx) + 13, (dy) + 2, (dx) + 14, (dy) + 4, (dx) + 11, (dy) + 4, \
+    R((dx), (dy) + 4, 20, 5)
+#define CAR_WHEELS(dx, dy) R((dx) + 2, (dy) + 9, 4, 4), R((dx) + 14, (dy) + 9, 4, 4)
+#define SMALL_CAR(dx, dy) \
+    4, (dx) + 3, (dy) + 1, (dx) + 10, (dy) + 1, (dx) + 11, (dy) + 3, (dx) + 2, (dy) + 3, \
+    4, (dx) + 2, (dy) + 3, (dx) + 4, (dy) + 3, (dx) + 4, (dy) + 5, (dx) + 1, (dy) + 5, \
+    4, (dx) + 9, (dy) + 3, (dx) + 11, (dy) + 3, (dx) + 12, (dy) + 5, (dx) + 9, (dy) + 5, \
+    R((dx), (dy) + 5, 16, 4), R((dx) + 1, (dy) + 9, 4, 3), R((dx) + 11, (dy) + 9, 4, 3)
+#define WAVE(dy) /* a zigzag band 3 px tall across 24 px, in two halves */ \
+    14, 0, (dy) + 2, 2, (dy), 4, (dy) + 2, 6, (dy), 8, (dy) + 2, 10, (dy), 12, (dy) + 2, \
+        12, (dy) + 5, 10, (dy) + 3, 8, (dy) + 5, 6, (dy) + 3, 4, (dy) + 5, 2, (dy) + 3, 0, (dy) + 5, \
+    14, 12, (dy) + 2, 14, (dy), 16, (dy) + 2, 18, (dy), 20, (dy) + 2, 22, (dy), 24, (dy) + 2, \
+        24, (dy) + 5, 22, (dy) + 3, 20, (dy) + 5, 18, (dy) + 3, 16, (dy) + 5, 14, (dy) + 3, 12, (dy) + 5
+
+static const signed char ci_plate[] = {R(1, 6, 22, 2), R(1, 16, 22, 2), R(1, 8, 2, 8), R(21, 8, 2, 8),
+                                       R(5, 10, 6, 4), R(13, 10, 6, 4), 0};
+static const signed char ci_fuel[] = {R(3, 3, 10, 2), R(3, 5, 2, 5), R(11, 5, 2, 5), R(3, 10, 10, 11), R(1, 21, 14, 2),
+                                      6, 13, 6, 19, 6, 19, 18, 17, 18, 17, 8, 13, 8, 0};
+static const signed char ci_tank[] = {R(3, 9, 18, 13), 8, 5, 3, 13, 3, 13, 9, 11, 9, 11, 5, 7, 5, 7, 9, 5, 9,
+                                      4, 15, 7, 18, 4, 20, 6, 17, 9, 0};
+static const signed char ci_engine[] = {R(6, 8, 12, 3), R(6, 16, 12, 3), R(6, 11, 3, 5), R(15, 11, 3, 5),
+                                        8, 8, 4, 16, 4, 16, 6, 13, 6, 13, 8, 11, 8, 11, 6, 8, 6,
+                                        8, 2, 11, 4, 11, 4, 12, 6, 12, 6, 15, 4, 15, 4, 16, 2, 16,
+                                        8, 18, 12, 20, 12, 20, 10, 22, 10, 22, 17, 20, 17, 20, 15, 18, 15, 0};
+static const signed char ci_wading[] = {CAR_TOP(2, 2), 0};
+static const signed char ci_wading_a[] = {WAVE(13), WAVE(19), 0};
+static const signed char ci_ground[] = {CAR_TOP(2, 1), CAR_WHEELS(2, 1), R(0, 21, 24, 2), 0};
+static const signed char ci_ground_a[] = {12, 10, 12, 14, 12, 14, 14, 13, 14, 13, 17, 14, 17, 14, 19, 10, 19, 10, 17,
+                                          11, 17, 11, 14, 10, 14, 0};
+static const signed char ci_height[] = {CAR_TOP(2, 11), CAR_WHEELS(2, 11), 0};
+static const signed char ci_height_a[] = {R(0, 1, 24, 2), 3, 8, 5, 16, 5, 12, 9, 0};
+static const signed char ci_width[] = {4, 5, 4, 19, 4, 20, 6, 4, 6,   4, 4, 6, 7, 6, 7, 8, 3, 8,  /* front view */
+                                       4, 17, 6, 20, 6, 21, 8, 17, 8, R(3, 8, 18, 2), R(3, 10, 2, 2), R(8, 10, 8, 2),
+                                       R(19, 10, 2, 2), R(3, 12, 18, 3), R(5, 15, 4, 2), R(15, 15, 4, 2), 0};
+static const signed char ci_width_a[] = {12, 1, 19, 3, 19, 3, 21, 21, 21, 21, 19, 23, 19, 23, 24, 21, 24, 21, 23,
+                                         3, 23, 3, 24, 1, 24, 0};
+static const signed char ci_approach[] = {SMALL_CAR(0, 8), R(0, 20, 16, 2), 0};
+static const signed char ci_approach_a[] = {3, 18, 22, 24, 16, 24, 22, 0};
+static const signed char ci_departure[] = {SMALL_CAR(8, 8), R(8, 20, 16, 2), 0};
+static const signed char ci_departure_a[] = {3, 0, 16, 6, 22, 0, 22, 0};
+static const signed char ci_breakover[] = {SMALL_CAR(4, 4), 0};
+static const signed char ci_breakover_a[] = {6, 0, 21, 12, 15, 24, 21, 24, 23, 12, 17, 0, 23, 0};
+static const signed char ci_turning[] = {12, 5, 22, 5, 9, 9, 5, 15, 5, 19, 9, 19, 14, 17, 14, 17, 10, 14, 7, 10, 7,
+                                         7, 10, 7, 22, 3, 14, 14, 22, 14, 18, 18, 0};
+static const signed char ci_tyre[] = {   /* a tyre ring in eight pieces, and the hub */
+    4, 8, 2, 16, 2, 15, 6, 9, 6,        4, 16, 2, 22, 8, 18, 9, 15, 6,
+    4, 22, 8, 22, 16, 18, 15, 18, 9,    4, 22, 16, 16, 22, 15, 18, 18, 15,
+    4, 16, 22, 8, 22, 9, 18, 15, 18,    4, 8, 22, 2, 16, 6, 15, 9, 18,
+    4, 2, 16, 2, 8, 6, 9, 6, 15,        4, 2, 8, 8, 2, 9, 6, 6, 9,
+    R(10, 10, 4, 4), 0};
+static const signed char ci_pressure[] = {   /* a dial in eight pieces on a short stem */
+    4, 8, 2, 16, 2, 15, 4, 9, 4,        4, 16, 2, 21, 7, 19, 8, 15, 4,
+    4, 21, 7, 21, 15, 19, 14, 19, 8,    4, 21, 15, 16, 20, 15, 18, 19, 14,
+    4, 16, 20, 8, 20, 9, 18, 15, 18,    4, 8, 20, 3, 15, 5, 14, 9, 18,
+    4, 3, 15, 3, 7, 5, 8, 5, 14,        4, 3, 7, 8, 2, 9, 4, 5, 8,
+    R(11, 20, 2, 3), 0};
+static const signed char ci_pressure_a[] = {4, 10, 12, 15, 7, 17, 9, 12, 14, 0};
+static const signed char ci_drive[] = {R(3, 2, 4, 6), R(17, 2, 4, 6), R(7, 4, 10, 2), 0};   /* front axle */
+static const signed char ci_drive_a[] = {R(3, 16, 4, 6), R(17, 16, 4, 6), R(7, 18, 10, 2),  /* driven rear axle */
+                                         R(11, 8, 2, 10), R(10, 16, 4, 6), 0};
+static const signed char ci_weight[] = {R(8, 2, 8, 2), R(8, 4, 2, 4), R(14, 4, 2, 4), R(8, 8, 8, 2),
+                                        6, 6, 10, 18, 10, 21, 16, 21, 22, 3, 22, 3, 16, 0};
+
+/* The car: 2016 Mitsubishi Montero Sport (third generation), 2.4 diesel, rear-wheel drive (4x2).
+ * Figures from Mitsubishi's published specifications for this model (Australian Pajero Sport data
+ * where the Philippine sheet was not available); tyre pressure and gross weight are worth checking
+ * against the door-pillar sticker and the registration papers. */
+#define PLATE_NUMBER "NDE 4391"
+
+typedef struct {
+    const signed char *icon, *accent;  /* accent: the part that is measured, or NULL */
+    const char *label, *value, *unit, *sub;
+    int plate;                         /* value drawn as a number plate */
+} InfoTile;
+
+static const InfoTile g_tiles[16] = {
+    {ci_plate, NULL, "PLATE NUMBER", PLATE_NUMBER, NULL, NULL, 1},
+    {ci_fuel, NULL, "FUEL TYPE", "Diesel", NULL, "Euro 4 grade", 0},
+    {ci_tank, NULL, "FUEL TANK", "68", "L", "Full capacity", 0},
+    {ci_engine, NULL, "ENGINE", "2.4", "L turbo", "181 PS" DOT "430 Nm", 0},
+    {ci_wading, ci_wading_a, "WATER WADING", "700", "mm", "Maximum, at walking pace", 0},
+    {ci_ground, ci_ground_a, "GROUND CLEARANCE", "218", "mm", "Unladen", 0},
+    {ci_height, ci_height_a, "HEIGHT CLEARANCE", "1,805", "mm", "Overall height, unladen", 0},
+    {ci_width, ci_width_a, "WIDTH", "1,815", "mm", "Body, without mirrors", 0},
+    {ci_approach, ci_approach_a, "APPROACH ANGLE", "30" DEG, NULL, "Front overhang", 0},
+    {ci_departure, ci_departure_a, "DEPARTURE ANGLE", "24.2" DEG, NULL, "Rear overhang", 0},
+    {ci_breakover, ci_breakover_a, "BREAKOVER ANGLE", "23.1" DEG, NULL, "Crest between the axles", 0},
+    {ci_turning, NULL, "TURNING CIRCLE", "11.2", "m", "Kerb to kerb", 0},
+    {ci_tyre, NULL, "TYRE SIZE", "265/60 R18", NULL, "18 in alloy wheels", 0},
+    {ci_pressure, ci_pressure_a, "TYRE PRESSURE", "29 / 32", "psi", "Cold, front / rear", 0},
+    {ci_drive, ci_drive_a, "DRIVE", "4x2", NULL, "Rear wheels, 8-speed auto", 0},
+    {ci_weight, NULL, "GROSS WEIGHT", "2,710", "kg", "Fully loaded maximum", 0},
+};
+
+/* 4 x 4 tiles below the header, 10 px from the screen edges, 8 px apart. */
+#define TILE_W ((SCREEN_W - 2 * EDGE - 3 * GAP) / 4)   /* 189 */
+#define TILE_H ((BOTTOM - TOP - 3 * GAP) / 4)          /* 99 */
+#define BACK_END 90                                    /* the Back button: x 0 to here */
+
+/* The number plate: letters spaced 2 px apart on a light (by night dark) plate with a 2 px border. */
+static void draw_plate(const Canvas *c, const Theme *t, int x, int y, const char *s)
+{
+    char ch[2] = {0, 0};
+    const char *q;
+    int w = 0, h = 44;
+
+    for (q = s; *q; q++) {
+        ch[0] = *q;
+        w += tw(c, FONT_TILE, ch) + (q[1] ? 2 : 0);
+    }
+    c->round_rect(c->ctx, x, y, w + 28, h, 6, t->plate, t->text);
+    c->round_rect(c->ctx, x + 1, y + 1, w + 26, h - 2, 5, NO_FILL, t->text);
+    x += 14;
+    for (q = s; *q; q++) {
+        ch[0] = *q;
+        text(c, x, y + 32, FONT_TILE, t->text, ch);
+        x += tw(c, FONT_TILE, ch) + 2;
+    }
+}
+
+static void draw_tile(const Canvas *c, const Theme *t, const InfoTile *it, int x, int y)
+{
+    glass(c, t, x, y, TILE_W, TILE_H, RADIUS);
+    icon_shape(c, it->icon, x + 12, y + 9, t->muted);
+    if (it->accent)
+        icon_shape(c, it->accent, x + 12, y + 9, t->accent);
+    label(c, x + 44, y + 25, t->muted, it->label);
+    if (it->plate) {
+        draw_plate(c, t, x + 12, y + TILE_H - 10 - 44, it->value);
+        return;
+    }
+    value_unit(c, t, x + 12, y + 66, FONT_TILE, it->value, FONT_UNIT, it->unit, 3);
+    fitted(c, x + 12, y + 86, FONT_SMALL, t->muted, TILE_W - 24, it->sub);
+}
+
+/* Header: Back, the car's make, model and year; the time on the right. */
+static void draw_carinfo_header(const Canvas *c, const Theme *t, const DashModel *m)
+{
+    char buf[16];
+    int x;
+
+    header_bar(c, t);
+    icon_shape(c, g_back, 12, 10, t->text);
+    text(c, 36, 25, FONT_HEADER, t->text, "Back");
+    x = 36 + tw(c, FONT_HEADER, "Back") + 12;
+    c->fill_rect(c->ctx, x, 10, 1, 20, t->line);
+    x += 14;
+    text(c, x, 30, FONT_CLOCK, t->text, "Mitsubishi Montero Sport");
+    x += tw(c, FONT_CLOCK, "Mitsubishi Montero Sport") + 10;
+    text(c, x, 30, FONT_HEADER, t->muted, "2016" DOT "2.4 diesel 4x2");
+
+    if (m->clock_valid)
+        fmt_time12(buf, sizeof buf, m->hour, m->minute);
+    else
+        strcpy(buf, "--:--");
+    x = SCREEN_W - 16 - tw(c, FONT_HEADER, buf);
+    text(c, x, 25, FONT_HEADER, t->muted, buf);
+    icon_shape(c, g_clock, x - 26, 10, t->muted);
+}
+
+void render_carinfo(const Canvas *c, const DashModel *m)
+{
+    const Theme *t = m->night ? &g_night : &g_day;
+    int i;
+
+    c->fill_rect(c->ctx, 0, 0, SCREEN_W, SCREEN_H, t->bg);
+    draw_carinfo_header(c, t, m);
+    for (i = 0; i < 16; i++)
+        draw_tile(c, t, &g_tiles[i], EDGE + (i % 4) * (TILE_W + GAP), TOP + (i / 4) * (TILE_H + GAP));
+}
+
+int render_carinfo_back_hit(int x, int y)
+{
+    return x >= 0 && x < BACK_END && y >= 0 && y < HEADER_H + 4;
+}
+
 /* ---------------------------------------------------------------- maintenance menu */
 
 #define MENU_X 190
@@ -976,5 +1156,5 @@ int render_menu_hit(int x, int y, int has_file_manager)
 
 int render_clock_hit(int x, int y)
 {
-    return x >= 0 && x < 100 && y >= 0 && y < HEADER_H;
+    return x >= 0 && x < 120 && y >= 0 && y < HEADER_H; /* "12:45 PM" is about 100 px wide */
 }

@@ -6,7 +6,9 @@
  * headlights, sunset or sunrise), side columns 1/6 of the screen wide (speed and elevation on the
  * left; outside temperature, pressure and battery on the right), the heading at the bottom left
  * and the address at the bottom right, each 2/6 wide. Icons are drawn on a pixel grid for the
- * low-resolution screen; graphs are smooth curves. Day and night colours follow the sun.
+ * low-resolution screen; graphs are lines through every sample. Day and night colours follow the
+ * sun. A button at the right end of the header opens the car info page (fixed facts about the
+ * car in 16 tiles), whose Back button returns to the dashboard.
  * Layout and colours follow the design canvas; text is UTF-8. Portable C. */
 #ifndef RENDER_H
 #define RENDER_H
@@ -52,6 +54,13 @@ typedef struct {
 #define CAR_Y ((SCREEN_H + HEADER_H) / 2)
 
 void render_dashboard(const Canvas *c, const DashModel *m);
+
+/* Car info page: plate, fuel, clearances, angles, tyres and other fixed facts about the car. */
+void render_carinfo(const Canvas *c, const DashModel *m);
+/* 1 when (x, y) is on the car info button in the dashboard's header. */
+int render_carinfo_button_hit(int x, int y);
+/* 1 when (x, y) is on the car info page's Back button. */
+int render_carinfo_back_hit(int x, int y);
 
 /* Maintenance menu, opened by holding the clock. The time-zone row shows m->utc_offset_min; the
  * program changes its setting when MENU_TZ_MINUS or MENU_TZ_PLUS is hit. */

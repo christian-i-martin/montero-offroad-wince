@@ -1,10 +1,11 @@
-MONTERO DASHBOARD 0.4.0
+MONTERO DASHBOARD 0.5.0
 
 What it is
   A one-page off-road dashboard that the head unit's NAV button opens instead of
   the navigation program. The map of where the car is fills the whole screen;
   the readings sit on see-through panels over it: a bar at the top (clock, GPS,
-  headlights, sunset or sunrise), speed (current, average and top) and
+  headlights, sunset or sunrise, and the car info button), speed (current,
+  average and top) and
   elevation with a graph of the last 20 km on the left, outside temperature,
   pressure and battery with small graphs on the right, the heading at the
   bottom left and the address (road, barangay, city and province) at the
@@ -32,6 +33,8 @@ Using it
   It updates once a second. Hold the clock (top left) for 2 seconds for the
   menu: Time zone, Open file manager (Total Commander, if it was included),
   Close dashboard, Back. Pressing NAV again brings the dashboard back.
+  The button at the top right (a car with an "i") opens the car info page;
+  Back at its top left returns to the dashboard.
   The + and - buttons at the bottom of the map zoom in and out. The map starts
   at the closest zoom the map files hold (15 when the zoom 15 file is on the
   card, otherwise 14) and goes back to it at every start.
@@ -48,6 +51,14 @@ Map
   map with MAP_STYLE=light). The dark map is drawn at half brightness at night.
   Map data (c) OpenMapTiles (c) OpenStreetMap contributors.
 
+Car info
+  A page of fixed facts about the car: plate number, fuel type, fuel tank,
+  engine, water wading depth, ground and height clearance, width, approach,
+  departure and breakover angles, turning circle, tyre size and pressure,
+  drive and gross weight. They are built into the program (2016 Montero Sport
+  2.4 diesel 4x2); nothing is read from the car. Check the tyre pressure
+  against the sticker on the driver's door pillar.
+
 Address
   Bottom right: the nearest named road (within 50 m), the barangay, then the
   city or municipality and the province, looked up offline in luzon.addr in
@@ -63,7 +74,8 @@ Address
 Clock
   The head unit's own clock resets to 8 June 2012, so the dashboard takes the
   time and date from GPS. The clock appears once GPS has a fix (it then keeps
-  running if the signal drops). GPS gives UTC; the dashboard shows UTC+8
+  running if the signal drops). Times are shown with AM and PM.
+  GPS gives UTC; the dashboard shows UTC+8
   unless you choose another time zone with the - and + buttons in the menu
   (30-minute steps). A choice is saved in dashboard-settings.txt next to
   Navigation.exe; delete that file to go back to UTC+8.
