@@ -3,6 +3,7 @@
 A fake tile source stands in for the tile server: tiles that touch a small "island" box are
 patterned (not one colour), all others are one-colour sea.
 """
+import contextlib
 import importlib.util
 import io
 import json
@@ -400,6 +401,11 @@ class PackerTests(unittest.TestCase):
                                       log=out.write)
         self.assertEqual(total, 234)
 
+    def test_zoom_16_is_the_limit(self):
+        self.assertEqual(self.args("--min-zoom", "16", "--max-zoom", "16").max_zoom, 16)
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            self.args("--max-zoom", "17")
+
 
 class StyleTests(unittest.TestCase):
     def setUp(self):
@@ -440,6 +446,45 @@ class StyleTests(unittest.TestCase):
         self.assertIn("line-dasharray", layers["track"]["paint"])
         self.assertIn("line-dasharray", layers["path"]["paint"])
         self.assertLess(layers["path"]["paint"]["line-dasharray"][0], 0.5)
+
+    def test_large_print_at_zoom_16(self):
+        """Zoom 16 (style zoom 15): every line and dot twice its zoom 15 size, every label layer
+        seen there a copy of its zoom 15 layer with twice the text and halo."""
+        z15, z16 = make_style.sz(15), make_style.sz(16)
+        layers = {item["id"]: item for item in self.style["layers"]}
+        for item in self.style["layers"]:
+            for key in ("line-width", "circle-radius", "circle-stroke-width"):
+                value = item["paint"].get(key)
+                if value is None:
+                    continue
+                self.assertEqual(value[0], "interpolate", item["id"])
+                stops = dict(zip(value[3::2], value[4::2]))
+                self.assertEqual(max(stops), z16, item["id"])
+                below = max(z for z in stops if z < z16)
+                self.assertLessEqual(below, z15, item["id"])
+                self.assertAlmostEqual(stops[z16], 2 * stops[below], places=2, msg=item["id"])
+            if item["type"] != "symbol" or item.get("maxzoom", z16) < z16:
+                continue
+            if item["id"].endswith("-large"):
+                normal = layers[item["id"][:-len("-large")]]
+                self.assertEqual(item["minzoom"], max(normal.get("minzoom", 0), z16))
+                self.assertEqual(item["layout"]["text-size"],
+                                 2 * make_style.at_zoom_15(normal["layout"]["text-size"]))
+                self.assertEqual(item["paint"]["text-halo-width"],
+                                 round(2 * normal["paint"]["text-halo-width"], 2))
+                self.assertEqual(item["filter"] if "filter" in item else None,
+                                 normal["filter"] if "filter" in normal else None)
+            else:
+                self.assertEqual(item.get("maxzoom"), z16, item["id"])
+                self.assertIn(item["id"] + "-large", layers)
+
+    def test_label_sizes_stop_at_zoom_15(self):
+        """The renderer places labels using their size a zoom level further in, so a label
+        layer shown at zoom 15 must not change size after it, or zoom 15 labels would move."""
+        for item in self.style["layers"]:
+            size = item.get("layout", {}).get("text-size")
+            if isinstance(size, list):
+                self.assertLessEqual(max(size[3::2]), make_style.sz(15), item["id"])
 
     def test_tileserver_config_points_at_style(self):
         config = json.loads((MAP_DIR / "tileserver" / "config.json").read_text())

@@ -127,6 +127,28 @@ int map_has_zoom(const MapSet *s, int zoom)
     return 0;
 }
 
+int map_area(const MapSet *s, int zoom, MapArea *a)
+{
+    int i, found = 0;
+    for (i = 0; i < s->count; i++) {
+        const MapPack *p = &s->packs[i];
+        double left = (double)p->x0 * MAP_TILE, top = (double)p->y0 * MAP_TILE;
+        double right = left + (double)p->cols * MAP_TILE, bottom = top + (double)p->rows * MAP_TILE;
+        if (p->zoom != zoom || p->style != s->style)
+            continue;
+        if (!found || left < a->left)
+            a->left = left;
+        if (!found || top < a->top)
+            a->top = top;
+        if (!found || right > a->right)
+            a->right = right;
+        if (!found || bottom > a->bottom)
+            a->bottom = bottom;
+        found = 1;
+    }
+    return found;
+}
+
 static const MapPack *find_pack(const MapSet *s, int zoom, unsigned x, unsigned y)
 {
     int i;
@@ -178,8 +200,10 @@ int map_tile_bytes(MapSet *s, int zoom, unsigned x, unsigned y, const unsigned c
 }
 
 /* The decoded tile from the cache, decoding it on a miss. Returns NULL with *fill set when the
- * tile is drawn as one colour: outside every pack, an empty entry, or a tile that failed. */
-static const unsigned short *get_tile(MapSet *s, int zoom, unsigned x, unsigned y, unsigned *fill)
+ * tile is drawn as one colour: outside every pack, an empty entry, a tile that failed, or (with
+ * *left_out set) a tile not in the cache while may_decode is 0, which is not read at all. */
+static const unsigned short *get_tile(MapSet *s, int zoom, unsigned x, unsigned y, int may_decode, unsigned *fill,
+                                      int *left_out)
 {
     MapTile *slot = NULL;
     const MapPack *p;
@@ -201,6 +225,11 @@ static const unsigned short *get_tile(MapSet *s, int zoom, unsigned x, unsigned 
     p = find_pack(s, zoom, x, y);
     if (p == NULL) {
         *fill = MAP_OUTSIDE_RGB;
+        return NULL;
+    }
+    if (!may_decode) {
+        *fill = p->background;
+        *left_out = 1;
         return NULL;
     }
     n = map_tile_bytes(s, zoom, x, y, &data);
@@ -342,8 +371,10 @@ static void fill_part(unsigned short *out, int stride, int x0, int y0, int x1, i
 int map_compose(MapSet *s, unsigned short *out, int w, int h, int stride, int zoom, double cx, double cy, int night)
 {
     long left, top, tx, ty, side;
+    unsigned tries = s->decoded + s->failed; /* both grow once per tile read and decoded */
     int result;
 
+    s->skipped = 0;
     if (s->count == 0)
         return MAP_NO_FILES;
     if (zoom < 0 || zoom > MAP_MAX_ZOOM || w <= 0 || h <= 0)
@@ -366,9 +397,12 @@ int map_compose(MapSet *s, unsigned short *out, int w, int h, int stride, int zo
             int x1 = (int)((tx0 + MAP_TILE < left + w ? tx0 + MAP_TILE : left + w) - left);
             unsigned fill = MAP_OUTSIDE_RGB;
             const unsigned short *px = NULL;
-            int y;
+            int y, may_decode = s->decode_limit <= 0 || s->decoded + s->failed - tries < (unsigned)s->decode_limit;
+            int left_out = 0;
             if (ty >= 0 && ty < side)
-                px = get_tile(s, zoom, (unsigned)(((tx % side) + side) % side), (unsigned)ty, &fill);
+                px = get_tile(s, zoom, (unsigned)(((tx % side) + side) % side), (unsigned)ty, may_decode, &fill,
+                              &left_out);
+            s->skipped += left_out;
             if (px == NULL) {
                 unsigned short c = map_rgb565(fill);
                 fill_part(out, stride, x0, y0, x1, y1, night ? MAP_DIM565(c) : c);

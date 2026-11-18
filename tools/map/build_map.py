@@ -60,6 +60,7 @@ DEFAULT_URL = "http://127.0.0.1:8091/styles/montero-dark/256/{z}/{x}/{y}.png"
 # longitude, maximum latitude). The whole country would be about 116.8,4.4,126.7,21.25.
 LUZON = (119.4, 12.4, 124.5, 18.8)
 MAX_LAT = 85.05112878  # Web Mercator stops here
+MAX_ZOOM = 16          # the styles draw zoom 16 in large print (make_style.py) and stop there
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 COLOUR_TOLERANCE = 4   # per channel, for palette rounding of the sea colour
 
@@ -726,7 +727,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
                    help="area the vector tiles cover (build_map.sh passes it); --bounds must "
                         "lie inside it")
     p.add_argument("--min-zoom", type=int, default=8)
-    p.add_argument("--max-zoom", type=int, default=14, help="up to 15 (default 14)")
+    p.add_argument("--max-zoom", type=int, default=14,
+                   help="up to 16, the large print level (default 14)")
     p.add_argument("--output", default=str(DEFAULT_OUTPUT),
                    help="folder for the .pack files (default dist/map/Map)")
     p.add_argument("--name", default="ph",
@@ -754,8 +756,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     p.add_argument("--count", action="store_true",
                    help="only print how many tiles the area has per zoom")
     args = p.parse_args(argv)
-    if not 0 <= args.min_zoom <= args.max_zoom <= 15:
-        p.error("zooms must satisfy 0 <= --min-zoom <= --max-zoom <= 15")
+    if not 0 <= args.min_zoom <= args.max_zoom <= MAX_ZOOM:
+        p.error("zooms must satisfy 0 <= --min-zoom <= --max-zoom <= %d" % MAX_ZOOM)
     if args.workers < 1:
         p.error("--workers must be at least 1")
     return args

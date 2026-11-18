@@ -14,6 +14,7 @@
 #define MODEL_H
 
 #include "carinfo.h"
+#include "holiday.h"
 #include "nmea.h"
 
 #define SERIES_MAX 120
@@ -48,7 +49,7 @@ enum { ADDRESS_NO_FILE, ADDRESS_WAITING, ADDRESS_OUTSIDE, ADDRESS_OK, ADDRESS_UN
 #define ELEVATION_RANGE "3 km"      /* ELEVATION_POINTS x ELEVATION_EVERY_M, the graph's note when full */
 #define SPEED_EVERY_MS 5000u         /* 120 x 5 s = 10 min */
 #define SPEED_WINDOW_MS 600000u
-#define MAP_DEFAULT_ZOOM 14          /* until the program knows the map files: then their highest level */
+#define MAP_DEFAULT_ZOOM 16.0        /* the dashboard map's zoom until another is chosen (then remembered) */
 
 typedef struct {
     unsigned now_ms;                  /* GetTickCount() */
@@ -91,9 +92,12 @@ typedef struct {
 
     Series pressure, elevation, outside, battery, speed;
 
-    /* map view, set by the program (dash.c), not by dash_update: zoom level shown and the range
-     * the map files hold (map_max_zoom < 0 when there are no map files) */
-    int map_zoom, map_min_zoom, map_max_zoom;
+    /* map view, set by the program (dash.c), not by dash_update: the zoom shown (any fraction) and
+     * the range the map file allows (map_max_zoom < 0 when there is no map file); the position drawn
+     * where the car is (Web Mercator, 0 to 1: it glides between GPS fixes) and the direction up the
+     * screen (degrees: the heading, so the map turns with the car; 0 north up). */
+    double map_zoom, map_min_zoom, map_max_zoom;
+    double map_mx, map_my, map_bearing;
 
     /* address, set by the program (dash.c) from the address file; UTF-8, empty when unknown.
      * For the screen only: never log it (it is as revealing as the position). */
@@ -102,6 +106,12 @@ typedef struct {
     char addr_road[ADDRESS_TEXT], addr_barangay[ADDRESS_TEXT], addr_city[ADDRESS_TEXT];
     char addr_province[ADDRESS_TEXT], addr_place[ADDRESS_TEXT];
     int addr_road_m, addr_place_m;    /* metres, -1 without a name */
+
+    /* today's holidays, set by the program (dash.c) from the holiday list (holiday.h): national
+     * ones from the date, local ones from the town nearest the GPS position. The place of a local
+     * one is for the screen only: never log it. */
+    int holiday_count;
+    HolidayRow holidays[HOLIDAY_ROWS];
 
     /* internal */
     int started;

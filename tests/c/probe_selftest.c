@@ -1,4 +1,4 @@
-/* Self-test for the probe's portable parts: bus ring reader and NMEA parser.
+/* Self-test for the probe's portable parts: bus ring reader, NMEA parser and status table.
  * Prints one line per failed check and exits non-zero if any failed. */
 #include <stdio.h>
 #include <stdlib.h>
@@ -6,6 +6,7 @@
 
 #include "busring.h"
 #include "nmea.h"
+#include "sysinfo.h"
 
 static int failures;
 #define CHECK(cond) do { if (!(cond)) { printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); failures++; } } while (0)
@@ -209,11 +210,81 @@ static void test_nmea(void)
     CHECK(!nmea_parse_sentence(&st, "garbage"));
 }
 
+static struct { int index, offset; long before, after; } changes[16];
+static int change_count;
+static void collect_change(void *ctx, int index, int offset, long before, long after)
+{
+    if (change_count < 16) {
+        changes[change_count].index = index;
+        changes[change_count].offset = offset;
+        changes[change_count].before = before;
+        changes[change_count].after = after;
+    }
+    change_count++;
+}
+
+static void test_sysinfo(void)
+{
+    static const int missing[] = {0x36, 0x37, 0x38, 0x39, 0x3a, 0x40};
+    unsigned char owner[SYSINFO_SIZE], a[SYSINFO_SIZE], b[SYSINFO_SIZE];
+    char text[200];
+    int i, k, covered = 0;
+
+    /* Fields are in index order, inside the block, never overlap, and leave exactly the 7 bytes
+     * 0x39-0x3d, 0x46, 0x47 uncovered; the missing indexes are absent. */
+    memset(owner, 0, sizeof owner);
+    for (i = 0; i < SYSINFO_FIELDS; i++) {
+        const SysInfoField *f = &sysinfo_fields[i];
+        CHECK(f->size == (f->index == 0x2c ? 4 : 1));
+        CHECK(f->offset + f->size <= SYSINFO_SIZE);
+        if (i > 0) CHECK(f->index > sysinfo_fields[i - 1].index);
+        for (k = 0; k < (int)(sizeof missing / sizeof missing[0]); k++) CHECK(f->index != missing[k]);
+        for (k = f->offset; k < f->offset + f->size && k < SYSINFO_SIZE; k++) { CHECK(!owner[k]); owner[k] = 1; covered++; }
+    }
+    CHECK(covered == SYSINFO_SIZE - 7);
+    CHECK(!owner[0x39] && !owner[0x3d] && !owner[0x46] && !owner[0x47] && owner[0x38] && owner[0x3e]);
+    CHECK(sysinfo_fields[9].index == 9 && sysinfo_fields[9].offset == 9);           /* lights, seen */
+    CHECK(sysinfo_fields[59].index == 0x41 && sysinfo_fields[59].offset == 0x45);   /* page, seen */
+    CHECK(sysinfo_fields[61].index == 0x43 && sysinfo_fields[61].offset == 0x40);
+
+    /* Values: bytes are unsigned, index 0x2c is a signed little-endian int. */
+    memset(a, 0, sizeof a);
+    a[0x09] = 1; a[0x2c] = 0xFE; a[0x2d] = 0xFF; a[0x2e] = 0xFF; a[0x2f] = 0xFF; a[0x45] = 200;
+    CHECK(sysinfo_value(a, &sysinfo_fields[9]) == 1);
+    CHECK(sysinfo_value(a, &sysinfo_fields[44]) == -2);
+    CHECK(sysinfo_value(a, &sysinfo_fields[59]) == 200);
+
+    /* Diff by field: one change per field (the int counts once), bytes outside fields by offset. */
+    memcpy(b, a, sizeof b);
+    b[0x09] = 0; b[0x2d] = 0x00; b[0x40] = 3; b[0x46] = 7;
+    change_count = 0;
+    CHECK(sysinfo_diff(a, b, 1, collect_change, NULL) == 4 && change_count == 4);
+    CHECK(changes[0].index == 0x09 && changes[0].before == 1 && changes[0].after == 0);
+    CHECK(changes[1].index == 0x2c && changes[1].before == -2 && changes[1].after == (long)(int)0xFFFF00FEu);
+    CHECK(changes[2].index == 0x43 && changes[2].offset == 0x40 && changes[2].after == 3);
+    CHECK(changes[3].index == -1 && changes[3].offset == 0x46 && changes[3].after == 7);
+    /* Without a verified layout every changed byte is reported by offset. */
+    change_count = 0;
+    CHECK(sysinfo_diff(a, b, 0, collect_change, NULL) == 4);
+    CHECK(changes[1].index == -1 && changes[1].offset == 0x2d && changes[1].before == 0xFF && changes[1].after == 0);
+    change_count = 0;
+    CHECK(sysinfo_diff(a, a, 1, collect_change, NULL) == 0 && change_count == 0);
+
+    /* Formatting: hex index, decimal value; truncates cleanly. */
+    CHECK(sysinfo_format(a, 8, 2, text, sizeof text) == 9 && strcmp(text, "08=0 09=1") == 0);
+    sysinfo_format(a, 44, 2, text, sizeof text);
+    CHECK(strcmp(text, "2c=-2 2d=0") == 0);
+    CHECK(sysinfo_format(a, 0, SYSINFO_FIELDS, text, 12) == 9 && strcmp(text, "00=0 01=0") == 0);
+    sysinfo_format(a, 60, 16, text, sizeof text);
+    CHECK(strcmp(text, "42=0 43=0") == 0);
+}
+
 int main(void)
 {
     test_ring();
     test_bundle();
     test_nmea();
+    test_sysinfo();
     if (failures == 0) printf("all checks passed\n");
     return failures ? 1 : 0;
 }

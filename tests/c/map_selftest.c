@@ -144,6 +144,40 @@ int main(int argc, char **argv)
     CHECK(small.decoded == 9); /* three tiles, two slots: every draw decodes again */
     map_free(&small);
 
+    /* the decode limit (the map page while dragging): at most one new tile per draw, the others in
+     * the pack's background colour, not read at all; tiles already decoded are always drawn. A box
+     * of 768 x 8 from the left edge of tile 1000 covers tiles 1000, 1001 and 1002 of row 2000. */
+    {
+        MapSet lim;
+        MapArea a;
+        CHECK(map_init(&lim, 8));
+        CHECK(lim.decode_limit == 0 && lim.skipped == 0); /* no limit unless the caller sets one */
+        rewind(f14);
+        CHECK(map_add_pack(&lim, f14, file_read_at));
+        lim.decode_limit = 1;
+        CHECK(map_compose(&lim, px, 768, 8, 768, 14, 1001.0 * 256 + 128, 2000.0 * 256 + 128, 0) == MAP_SHOWN);
+        CHECK(lim.decoded == 1 && lim.skipped == 2 && lim.read_errors == 0);
+        CHECK(px[0] == c565(A) && px[256] == c565(BG) && px[767] == c565(BG));
+        CHECK(map_compose(&lim, px, 768, 8, 768, 14, 1001.0 * 256 + 128, 2000.0 * 256 + 128, 0) == MAP_SHOWN);
+        CHECK(lim.decoded == 2 && lim.skipped == 1);
+        CHECK(px[0] == c565(A) && px[256] == c565(B) && px[512] == c565(BG));
+        CHECK(map_compose(&lim, px, 768, 8, 768, 14, 1001.0 * 256 + 128, 2000.0 * 256 + 128, 0) == MAP_SHOWN);
+        CHECK(lim.decoded == 3 && lim.skipped == 0 && px[512] == c565(D));
+        lim.decode_limit = 2; /* a failed tile counts like a decoded one: (1001, 2001) is not a PNG */
+        CHECK(map_compose(&lim, px, 768, 8, 768, 14, 1001.0 * 256 + 128, 2001.0 * 256 + 128, 0) == MAP_SHOWN);
+        CHECK(lim.decoded == 4 && lim.failed == 1 && lim.skipped == 1);
+        lim.decode_limit = 0;
+        CHECK(map_compose(&lim, px, 768, 8, 768, 14, 1001.0 * 256 + 128, 2001.0 * 256 + 128, 0) == MAP_SHOWN);
+        CHECK(lim.skipped == 0 && px[767] == c565(BG)); /* (1002, 2001): an empty entry */
+
+        /* the box the packs cover, in world pixels */
+        CHECK(map_area(&lim, 14, &a) && a.left == 1000.0 * 256 && a.top == 2000.0 * 256);
+        CHECK(a.right == 1003.0 * 256 && a.bottom == 2002.0 * 256);
+        CHECK(!map_area(&lim, 13, &a) && !map_area(&lim, 15, &a));
+        CHECK(map_area(&s, 15, &a) && a.left == 5.0 * 256 && a.right == 6.0 * 256 && a.bottom == 6.0 * 256);
+        map_free(&lim);
+    }
+
     /* styles: the zoom 14 pack as the dark map, the zoom 15 pack as the light one */
     {
         MapSet st;

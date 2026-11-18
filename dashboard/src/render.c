@@ -1,6 +1,7 @@
 #include "render.h"
 
-#include "map.h"
+#include "sun.h"
+#include "vmap.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -38,16 +39,17 @@ typedef struct {
     unsigned border, line, text, muted, accent, graph, cool, warn, area, spark, button, on_accent, outline;
     unsigned plate;              /* the number plate's background on the car info page */
     unsigned chosen_note;        /* the note on the chosen car info category (filled with text) */
+    unsigned holiday;            /* the holiday icon and the "DAY OFF" badge (red, the user's choice) */
 } Theme;
 /* Day: light panels; night: dark panels, warm amber. Both mixed in at 90 % (230 of 256, the user's
  * choice). accent is for text, graph for lines and marks, cool for the car on the map, area for the
  * filled part of the elevation graph. */
 static const Theme g_day = {0xE9E7DF, 0xFAFAF6, 230, 0xF4F4F0, 0xD5D7D3, 0xC6C9C5, 0x17202A, 0x4B5763, 0xB5400C,
                             0xE8590C, 0x1971C2, 0xC92A2A, 0xF5DECD, 0x5E6B78, 0xE4E5E1, 0xFFFFFF, 0xFFFFFF,
-                            0xFFFFFF, 0xC9CED3};
+                            0xFFFFFF, 0xC9CED3, 0xE03131};
 static const Theme g_night = {0x1E242A, 0x10141A, 230, 0x161B21, 0x2C3138, 0x3A414A, 0xEDE8DE, 0xA3ADB7, 0xF6A623,
                               0xF6A623, 0x5BC0EB, 0xFF7849, 0x382F1F, 0x8A96A3, 0x232931, 0x14181C, 0x0B0E11,
-                              0x1A2027, 0x4B5763};
+                              0x1A2027, 0x4B5763, 0xFF5C5C};
 
 /* Layout (design canvas): 10 px from the screen edges, 8 px between panels. */
 #define EDGE 10
@@ -162,6 +164,10 @@ static const signed char g_pin[] = {4, 5, 1, 11, 1, 14, 4, 2, 4, R(2, 4, 4, 4), 
 static const signed char g_plus[] = {R(8, 3, 2, 12), R(3, 8, 12, 2), 0};                             /* 18 px */
 static const signed char g_minus[] = {R(3, 8, 12, 2), 0};                                            /* 18 px */
 static const signed char g_north[] = {3, 12, 1, 17, 11, 7, 11, 0};                                   /* 24 px */
+/* The holiday icon, 24 px: a calendar page (two rings over the top bar, the outline in pieces)
+ * with a diamond in the middle. */
+static const signed char g_holiday[] = {R(6, 1, 3, 5), R(15, 1, 3, 5), R(2, 4, 20, 6), R(2, 10, 2, 12),
+                                        R(20, 10, 2, 12), R(2, 20, 20, 2), 4, 12, 11, 16, 15, 12, 19, 8, 15, 0};
 
 static const signed char *const g_icons[ICON_COUNT] = {g_gps, g_sunset, g_sunrise, g_lights, g_warn, g_warn_mark,
                                                        g_up, g_down, g_flat, g_pin, g_plus, g_minus, g_north};
@@ -797,14 +803,16 @@ static void draw_address(const Canvas *c, const Theme *t, const DashModel *m)
 
 /* ---------------------------------------------------------------- map */
 
-/* The car: an arrow along the GPS course while moving, otherwise a dot; grey without GPS. */
-static void draw_marker(const Canvas *c, const Theme *t, const DashModel *m, int cx, int cy)
+/* The car: an arrow along the GPS course while moving, otherwise a dot; grey without GPS. up:
+ * the direction up the screen (the map's turn), so the arrow points along the road on the map. */
+static void draw_marker(const Canvas *c, const Theme *t, const DashModel *m, int cx, int cy, double up)
 {
     static const double arrow[4][2] = {{0, -17}, {13, 16}, {0, 8}, {-13, 16}};
     if (m->gps_ok && m->heading_src == SRC_GPS) {
-        double a = m->heading_deg * 3.14159265358979 / 180.0, s = sin(a), co = cos(a);
+        double s, co;
         DPoint p[5];
         int i;
+        vmap_sincos(m->heading_deg - up, &s, &co);
         for (i = 0; i < 4; i++) {
             p[i].x = cx + iround(arrow[i][0] * co - arrow[i][1] * s);
             p[i].y = cy + iround(arrow[i][0] * s + arrow[i][1] * co);
@@ -817,14 +825,17 @@ static void draw_marker(const Canvas *c, const Theme *t, const DashModel *m, int
     }
 }
 
-/* Scale bar of a round distance and at most 64 px, on a small panel at the bottom. */
-static void draw_scale(const Canvas *c, const Theme *t, const DashModel *m)
+/* Scale bar of a round distance and at most 64 px, on a small panel with its top left at (x, y),
+ * for the ground at latitude lat. */
+static void draw_scale(const Canvas *c, const Theme *t, double lat, double zoom, int x, int y)
 {
     static const int nice[] = {10, 20, 50, 100, 200, 300, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000};
-    double mpp = map_metres_per_pixel(m->lat, m->map_zoom);
+    double s, co, mpp;
     char buf[16];
-    int i, len = 0, metres = 0, x = LEFT_X + WIDE_W + EDGE, y = BOTTOM - 38, w;
+    int i, len = 0, metres = 0, w;
 
+    vmap_sincos(lat, &s, &co);
+    mpp = 156543.03392804 * co / vmap_exp2(zoom); /* Web Mercator: the equator's length / 256 px at zoom 0 */
     for (i = 0; i < (int)(sizeof nice / sizeof nice[0]); i++) {
         int px = mpp > 0 ? iround(nice[i] / mpp) : 0;
         if (px > 64)
@@ -854,29 +865,61 @@ static void zoom_button(int index, Box *z)
     z->y = ZOOM_Y;
 }
 
-static void draw_map_controls(const Canvas *c, const Theme *t, const DashModel *m)
+/* Credits the map's licences ask for: OpenMapTiles (CC-BY 4.0), OpenStreetMap data (ODbL). */
+static const char g_credit[] = "\xC2\xA9 OpenMapTiles \xC2\xA9 OpenStreetMap";
+
+/* The credit on a small panel centred on x, its bottom at y. */
+static void draw_credit(const Canvas *c, const Theme *t, int x, int bottom)
 {
-    /* credits the map's licences ask for: OpenMapTiles (CC-BY 4.0), OpenStreetMap data (ODbL) */
-    static const char *const credit = "\xC2\xA9 OpenMapTiles \xC2\xA9 OpenStreetMap";
-    int nx = RIGHT_X - EDGE - 44, cw = tw(c, FONT_SMALL, credit), i;
+    int cw = tw(c, FONT_SMALL, g_credit);
+    glass(c, t, x - cw / 2 - 8, bottom - 19, cw + 16, 19, 9);
+    text(c, x - cw / 2, bottom - 5, FONT_SMALL, t->muted, g_credit);
+}
 
-    glass(c, t, nx, TOP, 44, 44, 22);                       /* north up */
-    icon(c, ICON_NORTH, nx + 10, TOP + 8, t->graph);
-    centred(c, nx, 44, TOP + 35, FONT_TAPE, t->text, "N");
+/* A compass needle on a round panel at (x, y): north half in the graph colour with an upright "N"
+ * beyond its tip, south half muted, turned as the map is (bearing up the screen). */
+static void draw_compass(const Canvas *c, const Theme *t, int x, int y, double bearing)
+{
+    static const double north[3][2] = {{0, -10}, {5, 0}, {-5, 0}}, south[3][2] = {{0, 10}, {5, 0}, {-5, 0}};
+    int cx = x + 22, cy = y + 22, i, w;
+    double s, co;
+    DPoint p[3];
+    glass(c, t, x, y, 44, 44, 22);
+    vmap_sincos(bearing, &s, &co); /* a direction on the ground to the screen: (c dx + s dy, -s dx + c dy) */
+    for (i = 0; i < 3; i++) {
+        p[i].x = cx + iround(co * south[i][0] + s * south[i][1]);
+        p[i].y = cy + iround(-s * south[i][0] + co * south[i][1]);
+    }
+    c->polygon(c->ctx, p, 3, t->muted);
+    for (i = 0; i < 3; i++) {
+        p[i].x = cx + iround(co * north[i][0] + s * north[i][1]);
+        p[i].y = cy + iround(-s * north[i][0] + co * north[i][1]);
+    }
+    c->polygon(c->ctx, p, 3, t->graph);
+    w = tw(c, FONT_TAPE, "N");
+    text(c, cx + iround(s * -16.0) - w / 2, cy + iround(co * -16.0) + 5, FONT_TAPE, t->text, "N"); /* north at 16 px */
+}
 
-    glass(c, t, CAR_X - cw / 2 - 8, ZOOM_Y - 25, cw + 16, 19, 9);
-    text(c, CAR_X - cw / 2, ZOOM_Y - 11, FONT_SMALL, t->muted, credit);
-    draw_scale(c, t, m);
-
-    glass(c, t, ZOOM_X, ZOOM_Y, ZOOM_W, ZOOM_H, ZOOM_H / 2);
-    c->fill_rect(c->ctx, ZOOM_X + ZOOM_W / 2, ZOOM_Y + 12, 1, ZOOM_H - 24, t->border);
+/* Minus | plus on one pill at (x, y), ZOOM_W x ZOOM_H; each greyed at the end of the range. */
+static void draw_zoom_buttons(const Canvas *c, const Theme *t, int x, int y, double zoom, double min_zoom,
+                              double max_zoom)
+{
+    int i;
+    glass(c, t, x, y, ZOOM_W, ZOOM_H, ZOOM_H / 2);
+    c->fill_rect(c->ctx, x + ZOOM_W / 2, y + 12, 1, ZOOM_H - 24, t->border);
     for (i = 0; i < 2; i++) {
-        Box z;
-        int enabled = i == 0 ? m->map_zoom < m->map_max_zoom : m->map_zoom > m->map_min_zoom;
-        zoom_button(i, &z);
-        icon(c, i == 0 ? ICON_PLUS : ICON_MINUS, z.x + (z.w - 18) / 2, z.y + (z.h - 18) / 2,
+        int enabled = i == 0 ? zoom < max_zoom - 0.01 : zoom > min_zoom + 0.01, bx = x + (i == 0 ? ZOOM_W / 2 : 0);
+        icon(c, i == 0 ? ICON_PLUS : ICON_MINUS, bx + (ZOOM_W / 2 - 18) / 2, y + (ZOOM_H - 18) / 2,
              enabled ? t->text : t->line);
     }
+}
+
+static void draw_map_controls(const Canvas *c, const Theme *t, const DashModel *m)
+{
+    draw_compass(c, t, RIGHT_X - EDGE - 44, TOP, m->map_bearing);
+    draw_credit(c, t, CAR_X, ZOOM_Y - 6);
+    draw_scale(c, t, m->lat, m->map_zoom, LEFT_X + WIDE_W + EDGE, BOTTOM - 38);
+    draw_zoom_buttons(c, t, ZOOM_X, ZOOM_Y, m->map_zoom, m->map_min_zoom, m->map_max_zoom);
 }
 
 int render_map_hit(int x, int y)
@@ -889,6 +932,11 @@ int render_map_hit(int x, int y)
             return i == 0 ? MAPHIT_ZOOM_IN : MAPHIT_ZOOM_OUT;
     }
     return MAPHIT_NONE;
+}
+
+int render_car_hit(int x, int y)
+{
+    return x >= CAR_X - CAR_HIT / 2 && x < CAR_X + CAR_HIT / 2 && y >= CAR_Y - CAR_HIT / 2 && y < CAR_Y + CAR_HIT / 2;
 }
 
 /* A message on a small panel in the middle of the map area. */
@@ -905,19 +953,18 @@ static void message(const Canvas *c, const Theme *t, int cy, const char *line1, 
 void render_dashboard(const Canvas *c, const DashModel *m)
 {
     const Theme *t = m->night ? &g_night : &g_day;
-    int files = c->map != NULL && m->map_max_zoom >= 0, shown = files && m->have_position, result = MAP_NO_FILES;
+    int files = c->map != NULL && m->map_max_zoom >= 0, shown = files && m->have_position, result = MAPDRAW_NO_FILES;
 
-    if (shown) { /* the whole screen, centred so the car sits in the middle below the header */
-        double px, py;
-        map_world_pixel(m->lat, m->lon, m->map_zoom, &px, &py);
-        result = c->map(c->ctx, 0, 0, SCREEN_W, SCREEN_H, m->map_zoom, px, py - (CAR_Y - SCREEN_H / 2), m->night);
-        if (result == MAP_NO_FILES)
+    if (shown) { /* the whole screen, the car in the middle below the header, its heading up */
+        result = c->map(c->ctx, 0, 0, SCREEN_W, SCREEN_H, m->map_mx, m->map_my, m->map_zoom, m->map_bearing, CAR_X,
+                        CAR_Y, m->night);
+        if (result == MAPDRAW_NO_FILES)
             files = shown = 0;
     }
     if (!shown)
         c->fill_rect(c->ctx, 0, 0, SCREEN_W, SCREEN_H, t->bg);
     else
-        draw_marker(c, t, m, CAR_X, CAR_Y);
+        draw_marker(c, t, m, CAR_X, CAR_Y, m->map_bearing);
 
     draw_header(c, t, m);
     draw_speed(c, t, m);
@@ -933,11 +980,186 @@ void render_dashboard(const Canvas *c, const DashModel *m)
     if (shown)
         draw_map_controls(c, t, m);
     if (!files)
-        message(c, t, CAR_Y - 20, "No map files", "Copy the Map folder to the SD card");
+        message(c, t, CAR_Y - 20, "No map file", "Copy the VMap folder to the SD card");
     else if (!m->have_position)
         message(c, t, CAR_Y - 20, "Waiting for GPS", NULL);
-    else if (result != MAP_SHOWN)
+    else if (result != MAPDRAW_SHOWN)
         message(c, t, CAR_Y + 56, "No map for this area", NULL);
+}
+
+/* ---------------------------------------------------------------- holiday notification */
+
+/* a mixed into b by alpha (0: a, 256: b), per colour channel. Text fades in and out this way,
+ * from the panel's colour (GDI cannot draw see-through text). */
+static unsigned mix(unsigned a, unsigned b, int alpha)
+{
+    unsigned out = 0;
+    int shift;
+    if (alpha >= 256)
+        return b;
+    if (alpha <= 0)
+        return a;
+    for (shift = 0; shift <= 16; shift += 8) {
+        int ca = (int)(a >> shift & 0xFF), cb = (int)(b >> shift & 0xFF);
+        out |= (unsigned)(ca + (cb - ca) * alpha / 256) << shift;
+    }
+    return out;
+}
+
+/* "Thursday, November 26, 2026" (1970-01-01 was a Thursday). */
+static void long_date(char *buf, int size, int year, int month, int day)
+{
+    static const char *const days[7] = {"Thursday", "Friday", "Saturday", "Sunday", "Monday", "Tuesday", "Wednesday"};
+    static const char *const months[12] = {"January", "February", "March", "April", "May", "June", "July",
+                                           "August", "September", "October", "November", "December"};
+    long n = sun_days_from_civil(year, month, day) % 7;
+    if (month < 1 || month > 12) {
+        buf[0] = 0;
+        return;
+    }
+    snprintf(buf, (size_t)size, "%s, %s %d, %d", days[n < 0 ? n + 7 : n], months[month - 1], day, year);
+}
+
+/* What kind of day it is: "Regular holiday", "Special non-working day", "Special working day";
+ * for a local one where: "Non-working day in Lucban", "Working holiday in San Juan". */
+static void holiday_note(char *buf, int size, const HolidayRow *r)
+{
+    if (!r->local)
+        snprintf(buf, (size_t)size, "%s", r->kind == HOLIDAY_REGULAR ? "Regular holiday"
+                                       : r->kind == HOLIDAY_SPECIAL ? "Special non-working day" : "Special working day");
+    else
+        snprintf(buf, (size_t)size, "%s in %s", r->kind == HOLIDAY_REGULAR ? "Regular holiday"
+                                         : r->kind == HOLIDAY_SPECIAL ? "Non-working day" : "Working holiday", r->place);
+}
+
+/* One row of the panel, its top at y: name, long date, then the "DAY OFF" badge and the note. */
+static void island_row(const Canvas *c, const Theme *t, const DashModel *m, const HolidayRow *r, int x, int y, int w,
+                       int alpha)
+{
+    char buf[2 * HOLIDAY_NAME_MAX + 32];
+    int tx = x + 52, right = x + w - 16, nx = tx;
+
+    fitted(c, tx, y + 27, FONT_ADDR, mix(t->panel, t->text, alpha), right - tx, r->name);
+    long_date(buf, sizeof buf, m->year, m->month, m->day);
+    fitted(c, tx, y + 45, FONT_TREND, mix(t->panel, t->muted, alpha), right - tx, buf);
+    if (HOLIDAY_DAY_OFF(r->kind)) {
+        int bw = label_width(c, "DAY OFF") + 11;
+        unsigned fill = mix(t->panel, t->holiday, alpha);
+        c->round_rect(c->ctx, tx, y + 51, bw, 16, 8, fill, fill);
+        label(c, tx + 6, y + 63, mix(t->panel, t->on_accent, alpha), "DAY OFF");
+        nx = tx + bw + 7;
+    }
+    holiday_note(buf, sizeof buf, r);
+    fitted(c, nx, y + 63, FONT_SMALL, mix(t->panel, t->text, alpha), right - nx, buf);
+}
+
+void render_island(const Canvas *c, const DashModel *m, const IslandFrame *f)
+{
+    const Theme *t = m->night ? &g_night : &g_day;
+    int i;
+
+    if (f->w < 1 || f->h < 1)
+        return;
+    /* nearly solid (the other panels are 90 %), so nothing under it shows through its text */
+    if (c->glass)
+        c->glass(c->ctx, f->x, f->y, f->w, f->h, f->radius, t->panel, 248);
+    else
+        c->round_rect(c->ctx, f->x, f->y, f->w, f->h, f->radius, t->solid, t->solid);
+    c->round_rect(c->ctx, f->x, f->y, f->w, f->h, f->radius, NO_FILL, t->border);
+    if (f->icon) /* the first row's icon: it travels between the button and the panel */
+        icon_shape(c, g_holiday, f->icon_x, f->icon_y, t->holiday);
+    if (!f->panel)
+        return;
+    for (i = 0; i < f->rows && i < m->holiday_count; i++) {
+        int a = f->alpha[i], y = f->y + ISLAND_PAD + i * ISLAND_ROW_H;
+        if (a <= 0)
+            continue;
+        if (i > 0) {
+            c->fill_rect(c->ctx, f->x + 16, y, f->w - 32, 1, mix(t->panel, t->border, a));
+            icon_shape(c, g_holiday, f->x + 16, y + 12, mix(t->panel, t->holiday, a));
+        }
+        island_row(c, t, m, &m->holidays[i], f->x, y, f->w, a);
+    }
+}
+
+/* ---------------------------------------------------------------- map page */
+
+/* The map alone, with a few controls on small panels at its edges: Back at the top left, the
+ * compass needle at the top right, the scale bar at the bottom left, the credit in the middle, "Centre on car"
+ * (while not following) and the zoom buttons at the bottom right. Each button also answers a
+ * finger up to MP_TAP pixels outside its panel. */
+#define MP_BACK_W 96
+#define MP_BACK_H 44
+#define MP_ZOOM_X (SCREEN_W - EDGE - ZOOM_W)
+#define MP_ZOOM_Y (BOTTOM - ZOOM_H)
+#define MP_CENTRE_W 148
+#define MP_CENTRE_X (MP_ZOOM_X - GAP - MP_CENTRE_W)
+#define MP_TAP 6
+#define MP_MID_X (SCREEN_W / 2)                /* the car while following: the middle of the screen */
+#define MP_MID_Y (SCREEN_H / 2)
+
+static int in_box(int x, int y, int bx, int by, int bw, int bh)
+{
+    return x >= bx - MP_TAP && x < bx + bw + MP_TAP && y >= by - MP_TAP && y < by + bh + MP_TAP;
+}
+
+void render_mappage(const Canvas *c, const DashModel *m, const MapView *v)
+{
+    const Theme *t = m->night ? &g_night : &g_day;
+    int files = c->map != NULL && m->map_max_zoom >= 0, shown = files && (m->have_position || !v->follow);
+    int result = MAPDRAW_NO_FILES;
+    double cx = 0, cy = 0, bearing = mapview_bearing(v, m);
+
+    if (shown) {
+        mapview_centre(v, m, &cx, &cy);
+        result = c->map(c->ctx, 0, 0, SCREEN_W, SCREEN_H, cx, cy, v->zoom, bearing, MP_MID_X, MP_MID_Y, m->night);
+        if (result == MAPDRAW_NO_FILES)
+            files = shown = 0;
+    }
+    if (!shown)
+        c->fill_rect(c->ctx, 0, 0, SCREEN_W, SCREEN_H, t->bg);
+    if (shown && m->have_position) { /* the car where it is in the view; left out near the edges */
+        double sx, sy;
+        int x, y;
+        mapview_to_screen(cx, cy, v->zoom, bearing, MP_MID_X, MP_MID_Y, m->map_mx, m->map_my, &sx, &sy);
+        x = iround(sx);
+        y = iround(sy);
+        if (x >= 20 && x <= SCREEN_W - 20 && y >= 20 && y <= SCREEN_H - 20)
+            draw_marker(c, t, m, x, y, bearing);
+    }
+
+    glass(c, t, EDGE, EDGE, MP_BACK_W, MP_BACK_H, MP_BACK_H / 2);
+    icon_shape(c, g_back, EDGE + 14, EDGE + 12, t->text);
+    text(c, EDGE + 40, EDGE + 27, FONT_HEADER, t->text, "Back");
+    if (shown) {
+        draw_compass(c, t, SCREEN_W - EDGE - 44, EDGE, bearing);
+        /* the scale at the car's latitude: across Luzon it differs by 3 % at most */
+        draw_scale(c, t, m->lat, v->zoom, EDGE, BOTTOM - 38);
+        draw_credit(c, t, SCREEN_W / 2, BOTTOM);
+        if (!v->follow) {
+            glass(c, t, MP_CENTRE_X, MP_ZOOM_Y, MP_CENTRE_W, ZOOM_H, ZOOM_H / 2);
+            icon(c, ICON_GPS, MP_CENTRE_X + 14, MP_ZOOM_Y + 12, t->cool);
+            text(c, MP_CENTRE_X + 42, MP_ZOOM_Y + 27, FONT_HEADER, t->text, "Centre on car");
+        }
+        draw_zoom_buttons(c, t, MP_ZOOM_X, MP_ZOOM_Y, v->zoom, m->map_min_zoom, m->map_max_zoom);
+    }
+    if (!files)
+        message(c, t, MP_MID_Y - 20, "No map file", "Copy the VMap folder to the SD card");
+    else if (!shown)
+        message(c, t, MP_MID_Y - 20, "Waiting for GPS", NULL);
+    else if (result != MAPDRAW_SHOWN)
+        message(c, t, MP_MID_Y + 56, "No map for this area", NULL);
+}
+
+int render_mappage_hit(int x, int y, const MapView *v)
+{
+    if (x < EDGE + MP_BACK_W + MP_TAP && y < EDGE + MP_BACK_H + MP_TAP) /* the whole corner */
+        return MAPPAGE_BACK;
+    if (in_box(x, y, MP_ZOOM_X, MP_ZOOM_Y, ZOOM_W, ZOOM_H))
+        return x >= MP_ZOOM_X + ZOOM_W / 2 ? MAPPAGE_ZOOM_IN : MAPPAGE_ZOOM_OUT;
+    if (!v->follow && in_box(x, y, MP_CENTRE_X, MP_ZOOM_Y, MP_CENTRE_W, ZOOM_H))
+        return MAPPAGE_CENTRE;
+    return MAPPAGE_NONE;
 }
 
 /* ---------------------------------------------------------------- car info page */

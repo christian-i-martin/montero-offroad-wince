@@ -13,7 +13,10 @@
  *   Next step  guided test: shows the next action and writes a marker into the log
  *   Exit       quits; it does NOT send EndCommunication (the resident Car Info screen owns that)
  * Always on: logs when Main.exe's climate popup (AirControlBar) appears and saves a few
- * screenshots of it, because fan speed never reaches the message bus.
+ * screenshots of it, because fan speed never reaches the message bus. Reads the fan level and the
+ * device status bytes (parking brake, lights, reverse) from Main.exe's memory, read-only. Maps
+ * Main.exe's system status table (shared memory SkSysInfoShareMem) read-only, logs all of it at
+ * start and exit and every change in between.
  *
  * Everything is appended to probe-log.txt next to the exe, flushed after every line.
  * Bus details come from SkCom.dll; see docs/vehicle-data-research.md.
@@ -27,8 +30,9 @@
 #include "busring.h"
 #include "carinfo.h"
 #include "nmea.h"
+#include "sysinfo.h"
 
-#define PROBE_VERSION "0.4.0"
+#define PROBE_VERSION "0.5.0"
 
 /* Message bus constants (decoded from SkCom.dll / Main.exe) */
 #define APP_MAIN 0x00       /* bus window "NavigRecive" */
@@ -570,11 +574,14 @@ static const char *const g_steps[] = {
     "Hazard lights ON 5 s, then OFF",
     "Foot firmly on the brake: shift to R, wait 5 s, back to P",
     "Foot on the brake: release the parking brake 5 s, apply it again",
-    "Stay here: change the A/C fan up 3 steps, then down 3 steps, 3 s apart",
-    "Press HOME, change the fan 3 steps, wait 10 s, press NAV, start Probe.exe again",
-    "Done: press Exit",
+    "Driver's seatbelt: unbuckle 5 s, then buckle again",
+    "Driver's door: open 5 s, then close",
+    "Get out: front passenger, rear left, rear right door, then tailgate, 5 s each",
+    "Key cars only: key to ACC 10 s (engine off), key to ON 10 s, start the engine",
+    "Done: if you can, leave this running 10 minutes, then press Exit",
 };
 static int g_step = -1;
+static unsigned g_sysinfo_changes; /* from the status table reader */
 
 static void update_values(void)
 {
@@ -588,8 +595,8 @@ static void update_values(void)
     if (g_fan_level >= 0)
         n += _snprintf(line + n, sizeof line - (size_t)n, " | Fan %ld/%ld", g_fan_level, g_fan_max);
     n += _snprintf(line + n, sizeof line - (size_t)n,
-                   "\r\nbus records %u, CarInfo replies %u, requests %u (%u failed)", g_bus.records,
-                   g_bus.carinfo_replies, g_bus.tx_count, g_bus.tx_failed);
+                   "\r\nbus records %u, CarInfo %u, sent %u (%u failed), status changes %u",
+                   g_bus.records, g_bus.carinfo_replies, g_bus.tx_count, g_bus.tx_failed, g_sysinfo_changes);
     _snprintf(line + n, sizeof line - (size_t)n, "\r\n%s%s",
               g_step < 0 ? "Press Next step to start the guided test" : "STEP: ",
               g_step < 0 ? "" : g_steps[g_step]);
@@ -1171,6 +1178,176 @@ static void climate_read(void)
     }
 }
 
+/* Main.exe's DeviceStatusManager splits the MCU's 16-bit device status word (GET_DEVICE_STATUS_RESP,
+ * incoming command 0x03) into bytes at object +0x4C (25 bytes; the previous copy follows at +0x65).
+ * Only three are broadcast: +0x4D lights (system info 9), +0x4E reverse (8), +0x4F unknown (5).
+ * +0x4C (status bit 0x0100) is never broadcast and is probably the parking brake. Decoded from
+ * Main.exe: singleton getter RVA 0x21700 keeps the object at [0xbe4cc], the constructor (0x213ac)
+ * writes vtable 0x9bce8, the change handler is 0x6a94c. Read-only, with the same process handle and
+ * Main.exe size check as the fan reader. */
+#define VA_DEVSTATUS_PTR 0xbe4cc
+#define DEVSTATUS_VTABLE 0x9bce8
+#define OFF_DEVSTATUS 0x4c
+#define DEVSTATUS_SIZE 25
+
+static struct {
+    int state; /* 0 no baseline yet, 1 reading, -1 off */
+    DWORD object;
+    unsigned char last[DEVSTATUS_SIZE];
+    int logged_none;
+} g_devstatus;
+
+static void devstatus_read(void)
+{
+    unsigned char now[DEVSTATUS_SIZE];
+    DWORD object, vtable = 0, got = 0;
+    int i;
+
+    if (g_climate.state != 1 || g_devstatus.state < 0)
+        return;
+    if (!remote_u32(VA_DEVSTATUS_PTR, &object))
+        return;
+    if (object == 0) {
+        if (!g_devstatus.logged_none++)
+            log_line("[devstatus] DeviceStatusManager not created yet");
+        return;
+    }
+    if (object != g_devstatus.object) {
+        if (!remote_u32(object, &vtable) || vtable != DEVSTATUS_VTABLE) {
+            log_line("[devstatus] object at %08lx is not the DeviceStatusManager (vtable %08lx); reading off",
+                     object, vtable);
+            g_devstatus.state = -1;
+            return;
+        }
+        g_devstatus.object = object;
+        g_devstatus.state = 0;
+    }
+    if (!g_read_memory(g_climate.process, (LPCVOID)(object + OFF_DEVSTATUS), now, DEVSTATUS_SIZE, &got) ||
+        got != DEVSTATUS_SIZE)
+        return;
+    if (g_devstatus.state == 0) {
+        log_hex("[devstatus] DeviceStatusManager +0x4c..+0x64 at start (+0x4c probably parking brake, "
+                "+0x4d lights, +0x4e reverse, +0x4f system info 5)", now, DEVSTATUS_SIZE, DEVSTATUS_SIZE);
+        memcpy(g_devstatus.last, now, DEVSTATUS_SIZE);
+        g_devstatus.state = 1;
+        return;
+    }
+    for (i = 0; i < DEVSTATUS_SIZE; i++)
+        if (now[i] != g_devstatus.last[i])
+            log_line("[devstatus] +0x%02x: %u -> %u", OFF_DEVSTATUS + i, g_devstatus.last[i], now[i]);
+    memcpy(g_devstatus.last, now, DEVSTATUS_SIZE);
+}
+
+/* ---------------------------------------------------------------- system status table (read-only) */
+
+/* Main.exe keeps its system state (Bluetooth, reverse, lights, current page and more) in the
+ * 72-byte shared memory block SkSysInfoShareMem (layout in sysinfo.h). Main.exe broadcasts its
+ * own changes as window message 0x52A, but values that never change were never logged, and other
+ * programs can write the block through SkShareMem.dll without a broadcast. So the probe maps the
+ * block read-only and logs all of it at start and exit, and each change in between. A mapping
+ * size of 0 can only open an existing block, never create one (SkShareMem.dll relies on the same
+ * rule to tell whether the block exists); no SkShareMem.dll code runs in the probe. */
+#define SKSHAREMEM_SIZE 147456
+
+/* Looked up at run time like OpenProcess above: the probe never imported them on the car before
+ * (this unit's SkGUI.dll imports them as COREDLL ordinals 548 and 549). */
+typedef HANDLE (WINAPI *create_mapping_fn)(HANDLE, LPSECURITY_ATTRIBUTES, DWORD, DWORD, DWORD, LPCWSTR);
+typedef LPVOID (WINAPI *map_view_fn)(HANDLE, DWORD, DWORD, DWORD, DWORD);
+
+static struct {
+    int state; /* 0 not started, 1 reading, -1 unavailable */
+    int layout_ok;
+    HANDLE mapping;
+    const volatile unsigned char *view;
+    unsigned char last[SYSINFO_SIZE];
+} g_sys;
+
+static void log_sysinfo_change(void *context, int index, int offset, long before, long after)
+{
+    g_sysinfo_changes++;
+    if (index >= 0)
+        log_line("[sysinfo] index 0x%02x: %ld -> %ld", index, before, after);
+    else
+        log_line("[sysinfo] offset 0x%02x (no index): %ld -> %ld", offset, before, after);
+}
+
+static void sysinfo_log_all(const char *when)
+{
+    char text[200];
+    int first;
+
+    log_line("[sysinfo] all values at %s (hex index = value)%s", when,
+             g_sys.layout_ok ? "" : ": layout not verified, raw bytes only");
+    for (first = 0; g_sys.layout_ok && first < SYSINFO_FIELDS; first += 16) {
+        sysinfo_format(g_sys.last, first, 16, text, sizeof text);
+        log_line("    %s", text);
+    }
+    log_hex("[sysinfo] raw block", g_sys.last, SYSINFO_SIZE, SYSINFO_SIZE);
+}
+
+static void sysinfo_copy(unsigned char *out)
+{
+    int i;
+    for (i = 0; i < SYSINFO_SIZE; i++)
+        out[i] = g_sys.view[i];
+}
+
+static void sysinfo_open(void)
+{
+    WIN32_FIND_DATAW found;
+    HANDLE f = FindFirstFileW(L"\\NandFlash\\Application\\Bin\\SkShareMem.dll", &found);
+    HMODULE core = GetModuleHandleW(L"coredll.dll");
+    create_mapping_fn create_mapping = core ? (create_mapping_fn)GetProcAddressW(core, L"CreateFileMappingW") : NULL;
+    map_view_fn map_view = core ? (map_view_fn)GetProcAddressW(core, L"MapViewOfFile") : NULL;
+    DWORD error;
+
+    g_sys.state = -1;
+    if (f != INVALID_HANDLE_VALUE) {
+        FindClose(f);
+        g_sys.layout_ok = found.nFileSizeLow == SKSHAREMEM_SIZE;
+        if (!g_sys.layout_ok)
+            log_line("[sysinfo] SkShareMem.dll is %lu bytes, not the analysed build", found.nFileSizeLow);
+    } else {
+        log_line("[sysinfo] SkShareMem.dll not found");
+    }
+    if (create_mapping == NULL || map_view == NULL) {
+        log_line("[sysinfo] CreateFileMappingW/MapViewOfFile not available; status table off");
+        return;
+    }
+    g_sys.mapping = create_mapping(INVALID_HANDLE_VALUE, NULL, PAGE_READONLY, 0, 0, L"SkSysInfoShareMem");
+    error = GetLastError();
+    if (g_sys.mapping == NULL) {
+        log_line("[sysinfo] SkSysInfoShareMem cannot be opened (error %lu); status table off", error);
+        return;
+    }
+    g_sys.view = (const volatile unsigned char *)map_view(g_sys.mapping, FILE_MAP_READ, 0, 0, SYSINFO_SIZE);
+    if (g_sys.view == NULL) {
+        log_line("[sysinfo] MapViewOfFile failed (error %lu); status table off", GetLastError());
+        CloseHandle(g_sys.mapping);
+        return;
+    }
+    log_line("[sysinfo] SkSysInfoShareMem mapped read-only (%s)",
+             error == ERROR_ALREADY_EXISTS ? "existing block" : "not reported as existing");
+    sysinfo_copy(g_sys.last);
+    g_sys.state = 1;
+    sysinfo_log_all("start");
+}
+
+static void sysinfo_poll(void)
+{
+    unsigned char now[SYSINFO_SIZE];
+
+    if (g_sys.state == 0)
+        sysinfo_open();
+    if (g_sys.state != 1)
+        return;
+    sysinfo_copy(now);
+    if (sysinfo_diff(g_sys.last, now, g_sys.layout_ok, log_sysinfo_change, NULL)) {
+        memcpy(g_sys.last, now, SYSINFO_SIZE);
+        update_values();
+    }
+}
+
 /* ---------------------------------------------------------------- window */
 
 static void run_worker(LPTHREAD_START_ROUTINE fn)
@@ -1220,8 +1397,12 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpa
         if (wparam == TIMER_WATCH) {
             static unsigned ticks;
             watch_climate_popup();
-            if (++ticks % 3 == 0)
+            if (++ticks % 3 == 0) {
                 climate_read();
+                devstatus_read();
+            }
+            if (ticks % 2 == 0)
+                sysinfo_poll();
         } else
             bus_timer((UINT)wparam);
         return 0;
@@ -1241,6 +1422,11 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpa
             log_pair_summary();
             log_line("[bus] %u records, %u CarInfo replies, %u requests sent (%u failed), %u own records seen",
                      g_bus.records, g_bus.carinfo_replies, g_bus.tx_count, g_bus.tx_failed, g_bus.own_seen);
+        }
+        if (g_sys.state == 1) {
+            sysinfo_poll();
+            sysinfo_log_all("exit");
+            log_line("[sysinfo] %u changes", g_sysinfo_changes);
         }
         InterlockedExchange((LONG *)&g_gps_running, 0);
         log_line("=== Exit");

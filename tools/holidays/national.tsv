@@ -1,0 +1,45 @@
+# National holidays: date, kind, name, source. Kind R regular holiday, S special non-working day
+# (both are days off), W special working day. Read by build_holidays.py.
+# 2026: Proclamation No. 1006 (3 Sep 2025), Eid'l Fitr No. 1189 (12 Mar 2026), Eid'l Adha No. 1264
+# (21 May 2026). 2027: Proclamation No. 1427 (8 Sep 2026); its Eid dates are proclaimed later
+# (expected around 10 March and 16 May 2027): add them here when they are.
+2026-01-01	R	New Year's Day	Proc. 1006
+2026-02-17	S	Chinese New Year	Proc. 1006
+2026-02-25	W	EDSA People Power Revolution anniversary	Proc. 1006
+2026-03-20	R	Eid'l Fitr	Proc. 1189
+2026-04-02	R	Maundy Thursday	Proc. 1006
+2026-04-03	R	Good Friday	Proc. 1006
+2026-04-04	S	Black Saturday	Proc. 1006
+2026-04-09	R	Araw ng Kagitingan	Proc. 1006
+2026-05-01	R	Labor Day	Proc. 1006
+2026-05-27	R	Eid'l Adha	Proc. 1264
+2026-06-12	R	Independence Day	Proc. 1006
+2026-08-21	S	Ninoy Aquino Day	Proc. 1006
+2026-08-31	R	National Heroes Day	Proc. 1006
+2026-11-01	S	All Saints' Day	Proc. 1006
+2026-11-02	S	All Souls' Day	Proc. 1006
+2026-11-30	R	Bonifacio Day	Proc. 1006
+2026-12-08	S	Feast of the Immaculate Conception	Proc. 1006
+2026-12-24	S	Christmas Eve	Proc. 1006
+2026-12-25	R	Christmas Day	Proc. 1006
+2026-12-30	R	Rizal Day	Proc. 1006
+2026-12-31	S	Last day of the year	Proc. 1006
+2027-01-01	R	New Year's Day	Proc. 1427
+2027-02-06	S	Chinese New Year	Proc. 1427
+2027-02-25	W	EDSA People Power Revolution anniversary	Proc. 1427
+2027-03-25	R	Maundy Thursday	Proc. 1427
+2027-03-26	R	Good Friday	Proc. 1427
+2027-03-27	S	Black Saturday	Proc. 1427
+2027-04-09	R	Araw ng Kagitingan	Proc. 1427
+2027-05-01	R	Labor Day	Proc. 1427
+2027-06-12	R	Independence Day	Proc. 1427
+2027-08-21	S	Ninoy Aquino Day	Proc. 1427
+2027-08-30	R	National Heroes Day	Proc. 1427
+2027-11-01	S	All Saints' Day	Proc. 1427
+2027-11-02	S	All Souls' Day	Proc. 1427
+2027-11-30	R	Bonifacio Day	Proc. 1427
+2027-12-08	S	Feast of the Immaculate Conception	Proc. 1427
+2027-12-24	S	Christmas Eve	Proc. 1427
+2027-12-25	R	Christmas Day	Proc. 1427
+2027-12-30	R	Rizal Day	Proc. 1427
+2027-12-31	S	Last day of the year	Proc. 1427

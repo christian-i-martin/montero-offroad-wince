@@ -52,7 +52,15 @@ typedef struct {
     unsigned char *bytes;             /* compressed bytes of the tile being decoded */
     unsigned bytes_size;
     unsigned decoded, failed, read_errors;
+    /* Set by the caller: the most tiles one map_compose may read and decode (0: no limit). The
+     * map page keeps it low while a finger drags the map, so a frame never waits for many tiles;
+     * the tiles left out are drawn in the pack's background colour and counted in `skipped`. */
+    int decode_limit;
+    int skipped;                      /* tiles the last map_compose left out because of the limit */
 } MapSet;
+
+/* A box in world pixels at one zoom level: left and top inside, right and bottom just outside. */
+typedef struct { double left, top, right, bottom; } MapArea;
 
 /* cache_tiles decoded tiles are kept (each 128 KB). Returns 0 when memory runs out. */
 int map_init(MapSet *s, int cache_tiles);
@@ -70,6 +78,9 @@ int map_use_style(MapSet *s, int style);
 /* 1 when some pack of the style in use has tiles at this zoom level. */
 int map_has_zoom(const MapSet *s, int zoom);
 
+/* The box around every pack of the style in use at this zoom level. Returns 0 when none has it. */
+int map_area(const MapSet *s, int zoom, MapArea *a);
+
 /* World pixel of a position at a zoom level (Web Mercator). */
 void map_world_pixel(double lat, double lon, int zoom, double *px, double *py);
 
@@ -79,7 +90,8 @@ double map_metres_per_pixel(double lat, int zoom);
 /* Draws the map picture for a w x h box whose centre is world pixel (cx, cy) at zoom into out
  * (RGB565, stride in pixels, may be negative for bottom-up bitmaps; out points at the top row).
  * night halves the brightness. Returns MAP_SHOWN when a pack covers the centre, MAP_OUTSIDE
- * when none does (the box is then mostly MAP_OUTSIDE_RGB), MAP_NO_FILES without packs. */
+ * when none does (the box is then mostly MAP_OUTSIDE_RGB), MAP_NO_FILES without packs.
+ * Reads and decodes at most s->decode_limit tiles that are not in the cache (see MapSet). */
 int map_compose(MapSet *s, unsigned short *out, int w, int h, int stride, int zoom, double cx, double cy, int night);
 
 /* Compressed PNG bytes of one tile, for the preview on the build machine. Returns the length

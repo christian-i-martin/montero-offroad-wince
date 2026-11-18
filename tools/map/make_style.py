@@ -16,6 +16,10 @@ Zoom numbers in this file are dashboard tile zooms (256 pixel tiles, the zoom st
 .pack files). MapLibre counts zoom for 512 pixel tiles, so the style file gets each number minus
 one (function sz below): dashboard zoom 14 is style zoom 13.
 
+Zoom 16 is drawn in large print (the user's choice): the map is twice as close as at zoom 15,
+and text, lines and dots are twice their zoom 15 size, so it reads like zoom 15 enlarged but
+stays sharp. Zoom 8 to 15 draw exactly as without it (see LARGE_ZOOM).
+
 Run it after changing a colour or a width:
 
     python3 tools/map/make_style.py           # rewrite both style files
@@ -115,6 +119,16 @@ LIGHT = {
 PALETTES = {"dark": DARK, "light": LIGHT}
 
 
+# Large print at dashboard zoom 16: text, line widths, dots and label halos LARGE_PRINT times their
+# zoom 15 size. Line widths and dot sizes simply get one more stop at zoom 16 (grow). Text sizes
+# cannot: the renderer places labels using their size one zoom level further in (and at zoom 18 to
+# space them along roads), so a bigger size at zoom 16 would also move or drop labels at zoom 15.
+# Instead every label layer stops before zoom 16 and has a large print copy from zoom 16 on
+# (large_print_labels), so the label layers seen at zoom 8 to 15 are unchanged.
+LARGE_ZOOM = 16
+LARGE_PRINT = 2.0
+
+
 def sz(tile_zoom: float) -> float:
     """Dashboard tile zoom (256 pixel tiles) to MapLibre style zoom (512 pixel tiles)."""
     return tile_zoom - 1
@@ -126,6 +140,23 @@ def ramp(stops: List[tuple], base: float = 1.4) -> list:
     for zoom, value in stops:
         expr += [sz(zoom), value]
     return expr
+
+
+def grow(stops: List[tuple], base: float = 1.4) -> list:
+    """A line width or dot size: ramp through the stops (all before zoom 16), then LARGE_PRINT
+    times the last stop's value at zoom 16 (the value at zoom 15, which the ramp holds)."""
+    if stops[-1][0] >= LARGE_ZOOM:
+        raise ValueError("stops must end before zoom %d" % LARGE_ZOOM)
+    return ramp(list(stops) + [(LARGE_ZOOM, round(stops[-1][1] * LARGE_PRINT, 2))], base)
+
+
+def at_zoom_15(value: Any) -> float:
+    """A text size, a number or a ramp whose last stop is at zoom 15 or before, at zoom 15."""
+    if isinstance(value, (int, float)):
+        return value
+    if value[0] != "interpolate" or value[-2] > sz(15):
+        raise ValueError("not a ramp ending by zoom 15: %r" % (value,))
+    return value[-1]
 
 
 def steps(first: Any, stops: List[tuple]) -> list:
@@ -206,7 +237,7 @@ def road_layers() -> List[Dict[str, Any]]:
         out.append(layer("tunnel-" + name, "line", "transportation", first,
                          filt=["all", TUNNEL, is_class(*classes)],
                          layout={"line-cap": "butt", "line-join": "round"},
-                         paint={"line-color": globals()[colour], "line-width": ramp(widths),
+                         paint={"line-color": globals()[colour], "line-width": grow(widths),
                                 "line-opacity": TUNNEL_OPACITY,
                                 "line-dasharray": [2, 1]}))
 
@@ -215,18 +246,18 @@ def road_layers() -> List[Dict[str, Any]]:
     out.append(layer("path", "line", "transportation", 14,
                      filt=["all", NOT_TUNNEL, is_class("path")],
                      layout={"line-cap": "round", "line-join": "round"},
-                     paint={"line-color": PATH, "line-width": ramp([(14, 1.3), (15, 1.8)]),
+                     paint={"line-color": PATH, "line-width": grow([(14, 1.3), (15, 1.8)]),
                             "line-dasharray": [0.1, 2.2]}))
     out.append(layer("track-casing", "line", "transportation", 13,
                      filt=["all", NOT_TUNNEL, is_class("track")],
                      layout={"line-cap": "butt", "line-join": "round"},
                      paint={"line-color": CASING, "line-opacity": 0.8,
-                            "line-width": ramp([(13, 2.8), (14, 3.8), (15, 4.8)])}))
+                            "line-width": grow([(13, 2.8), (14, 3.8), (15, 4.8)])}))
     out.append(layer("track", "line", "transportation", 13,
                      filt=["all", NOT_TUNNEL, is_class("track")],
                      layout={"line-cap": "butt", "line-join": "round"},
                      paint={"line-color": TRACK,
-                            "line-width": ramp([(13, 1.5), (14, 2.2), (15, 2.9)]),
+                            "line-width": grow([(13, 1.5), (14, 2.2), (15, 2.9)]),
                             "line-dasharray": [2.2, 1.2]}))
 
     # Casings of the normal roads, then the roads themselves.
@@ -237,35 +268,35 @@ def road_layers() -> List[Dict[str, Any]]:
                          filt=["all", NOT_TUNNEL, is_class(*classes)],
                          layout={"line-cap": "round", "line-join": "round"},
                          paint={"line-color": CASING, "line-opacity": 0.9,
-                                "line-width": ramp(widen(widths, extra))}))
+                                "line-width": grow(widen(widths, extra))}))
     for name, classes, first, colour, widths, _ in ROADS:
         if name in ("minor", "service"):
             # Paved (or unknown surface) minor roads solid; unpaved ones dashed in earth colour.
             out.append(layer("road-" + name, "line", "transportation", first,
                              filt=["all", NOT_TUNNEL, PAVED_OR_UNKNOWN, is_class(*classes)],
                              layout={"line-cap": "round", "line-join": "round"},
-                             paint={"line-color": globals()[colour], "line-width": ramp(widths)}))
+                             paint={"line-color": globals()[colour], "line-width": grow(widths)}))
             out.append(layer("road-" + name + "-unpaved", "line", "transportation", first,
                              filt=["all", NOT_TUNNEL, UNPAVED_FILTER, is_class(*classes)],
                              layout={"line-cap": "butt", "line-join": "round"},
-                             paint={"line-color": UNPAVED, "line-width": ramp(widths),
+                             paint={"line-color": UNPAVED, "line-width": grow(widths),
                                     "line-dasharray": [4, 1.5]}))
         else:
             out.append(layer("road-" + name, "line", "transportation", first,
                              filt=["all", NOT_TUNNEL, is_class(*classes)],
                              layout={"line-cap": "round", "line-join": "round"},
-                             paint={"line-color": globals()[colour], "line-width": ramp(widths)}))
+                             paint={"line-color": globals()[colour], "line-width": grow(widths)}))
 
     out.append(layer("rail", "line", "transportation", 10,
                      filt=["all", NOT_TUNNEL, is_class("rail", "transit")],
-                     paint={"line-color": RAIL, "line-width": ramp([(10, 0.8), (15, 2.0)])}))
+                     paint={"line-color": RAIL, "line-width": grow([(10, 0.8), (15, 2.0)])}))
     out.append(layer("rail-hatch", "line", "transportation", 13,
                      filt=["all", NOT_TUNNEL, is_class("rail", "transit")],
-                     paint={"line-color": LAND, "line-width": ramp([(13, 0.6), (15, 1.2)]),
+                     paint={"line-color": LAND, "line-width": grow([(13, 0.6), (15, 1.2)]),
                             "line-dasharray": [2, 2]}))
     out.append(layer("ferry", "line", "transportation", 11, filt=is_class("ferry"),
                      paint={"line-color": FERRY, "line-opacity": 0.4,
-                            "line-width": ramp([(11, 0.7), (15, 1.4)]),
+                            "line-width": grow([(11, 0.7), (15, 1.4)]),
                             "line-dasharray": [3, 2]}))
     return out
 
@@ -289,7 +320,7 @@ def area_layers() -> List[Dict[str, Any]]:
         layer("park", "fill", "park", 9,
               paint={"fill-color": PARK_FILL, "fill-opacity": 0.35, "fill-antialias": False}),
         layer("park-outline", "line", "park", 10,
-              paint={"line-color": PARK_LINE, "line-width": ramp([(10, 0.6), (15, 1.4)]),
+              paint={"line-color": PARK_LINE, "line-width": grow([(10, 0.6), (15, 1.4)]),
                      "line-dasharray": [3, 2]}),
         layer("water", "fill", "water", filt=["!=", ["get", "brunnel"], "tunnel"],
               paint={"fill-color": WATER, "fill-antialias": True}),
@@ -297,15 +328,15 @@ def area_layers() -> List[Dict[str, Any]]:
               filt=["all", NOT_TUNNEL, is_class("river", "canal")],
               layout={"line-cap": "round", "line-join": "round"},
               paint={"line-color": RIVER,
-                     "line-width": ramp([(9, 0.5), (11, 0.7), (13, 1.1), (15, 2.4)])}),
+                     "line-width": grow([(9, 0.5), (11, 0.7), (13, 1.1), (15, 2.4)])}),
         layer("waterway-stream", "line", "waterway", 13,
               filt=["all", NOT_TUNNEL, is_class("stream", "drain", "ditch")],
               layout={"line-cap": "round", "line-join": "round"},
-              paint={"line-color": STREAM, "line-width": ramp([(13, 0.5), (15, 1.1)])}),
+              paint={"line-color": STREAM, "line-width": grow([(13, 0.5), (15, 1.1)])}),
         layer("coastline", "line", "water", 9, filt=["!=", ["get", "brunnel"], "tunnel"],
-              paint={"line-color": COAST, "line-width": ramp([(9, 0.6), (15, 1.2)])}),
+              paint={"line-color": COAST, "line-width": grow([(9, 0.6), (15, 1.2)])}),
         layer("aeroway-runway", "line", "aeroway", 11, filt=is_class("runway"),
-              paint={"line-color": RUNWAY, "line-width": ramp([(11, 1.0), (15, 8.0)], 1.6)}),
+              paint={"line-color": RUNWAY, "line-width": grow([(11, 1.0), (15, 8.0)], 1.6)}),
         layer("building", "fill", "building", 15,
               paint={"fill-color": BUILDING, "fill-antialias": False}),
     ]
@@ -316,11 +347,11 @@ def boundary_layers() -> List[Dict[str, Any]]:
     return [
         layer("boundary-province", "line", "boundary", 10,
               filt=["all", on_land, ["match", ["get", "admin_level"], [3, 4], True, False]],
-              paint={"line-color": PROVINCE, "line-width": ramp([(10, 0.6), (15, 1.2)]),
+              paint={"line-color": PROVINCE, "line-width": grow([(10, 0.6), (15, 1.2)]),
                      "line-dasharray": [3, 2]}),
         layer("boundary-country", "line", "boundary",
               filt=["all", on_land, ["==", ["get", "admin_level"], 2]],
-              paint={"line-color": COUNTRY, "line-width": ramp([(8, 0.8), (15, 1.8)]),
+              paint={"line-color": COUNTRY, "line-width": grow([(8, 0.8), (15, 1.8)]),
                      "line-dasharray": [3, 2]}),
     ]
 
@@ -351,14 +382,14 @@ def label_layers() -> List[Dict[str, Any]]:
                                     "text-max-angle": 30}),
               paint=text_paint(ROAD_NAME_MAJOR)),
         layer("fuel", "circle", "poi", 14, filt=is_class("fuel"),
-              paint={"circle-color": FUEL, "circle-radius": ramp([(14, 3), (15, 4)]),
-                     "circle-stroke-color": HALO, "circle-stroke-width": 1.2}),
+              paint={"circle-color": FUEL, "circle-radius": grow([(14, 3), (15, 4)]),
+                     "circle-stroke-color": HALO, "circle-stroke-width": grow([(15, 1.2)])}),
         layer("fuel-name", "symbol", "poi", 15, filt=is_class("fuel"),
               layout=text_layout(12, **{"text-anchor": "left", "text-offset": [0.7, 0]}),
               paint=text_paint(ACCENT, 1.6)),
         layer("peak", "circle", "mountain_peak", 11, filt=is_class("peak", "volcano"),
-              paint={"circle-color": PEAK, "circle-radius": ramp([(11, 2.2), (15, 3.2)]),
-                     "circle-stroke-color": HALO, "circle-stroke-width": 1}),
+              paint={"circle-color": PEAK, "circle-radius": grow([(11, 2.2), (15, 3.2)]),
+                     "circle-stroke-color": HALO, "circle-stroke-width": grow([(15, 1)])}),
         layer("peak-name", "symbol", "mountain_peak", 12, filt=is_class("peak", "volcano"),
               layout={"text-field": ["case", ["has", "ele"],
                                      ["concat", NAME, "\n", ["to-string", ["get", "ele"]], " m"],
@@ -393,13 +424,44 @@ def label_layers() -> List[Dict[str, Any]]:
     ]
 
 
+LAYER_KEYS = ["id", "type", "source", "source-layer", "minzoom", "maxzoom", "filter", "layout",
+              "paint"]
+
+
+def large_print_labels(layers: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Each label layer seen at zoom 16 twice: as it is, up to zoom 15, then a large print copy
+    ("-large") from zoom 16 with text, halo and label spacing LARGE_PRINT times their zoom 15 size
+    (text-offset, text-max-width and letter spacing are measured in text heights, so they follow).
+    Other layers pass through."""
+    out: List[Dict[str, Any]] = []
+    for item in layers:
+        if item["type"] != "symbol" or item.get("maxzoom", sz(LARGE_ZOOM)) < sz(LARGE_ZOOM):
+            out.append(item)
+            continue
+        normal = dict(item, maxzoom=sz(LARGE_ZOOM))
+        large = json.loads(json.dumps(item))
+        large["id"] = item["id"] + "-large"
+        large["minzoom"] = max(item.get("minzoom", 0), sz(LARGE_ZOOM))
+        layout, paint = large["layout"], large["paint"]
+        layout["text-size"] = round(at_zoom_15(layout["text-size"]) * LARGE_PRINT, 2)
+        if "symbol-spacing" in layout:
+            layout["symbol-spacing"] = round(layout["symbol-spacing"] * LARGE_PRINT)
+        for key in ("text-halo-width", "text-halo-blur"):
+            if key in paint:
+                paint[key] = round(paint[key] * LARGE_PRINT, 2)
+        for layer_copy in (normal, large):
+            out.append({key: layer_copy[key] for key in LAYER_KEYS if key in layer_copy})
+    return out
+
+
 def build_style(palette: str = "dark") -> Dict[str, Any]:
     """The style with the colours of one palette ("dark" or "light"). The layer functions read the
     colour names as module globals, so they are set to the palette while the layers are built."""
     saved = {name: globals()[name] for name in PALETTE_NAMES}
     globals().update(PALETTES[palette])
     try:
-        layers = area_layers() + road_layers() + boundary_layers() + label_layers()
+        layers = (area_layers() + road_layers() + boundary_layers()
+                  + large_print_labels(label_layers()))
     finally:
         globals().update(saved)
     return {

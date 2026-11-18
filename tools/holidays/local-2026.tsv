@@ -1,0 +1,224 @@
+# Local special (non-working) days of 2026 in the Luzon regions, one presidential proclamation
+# each: dates (first..last for several days), kind (S: a day off there), places, name, source.
+# Places: Province, or Province/Town, as named in towns.tsv; several separated by ";".
+# From the proclamation texts on lawphil.net (Nos. 1109 to 1515, read 2026-11-18); later
+# proclamations (most of December) are not in yet. Read by build_holidays.py.
+2026-01-05	S	Ilocos Sur/Tagudin	440th founding anniversary	Proc. 1109
+2026-01-05	S	La Union/Bauang	440th founding anniversary	Proc. 1114
+2026-01-09	S	Metro Manila/Manila	Feast of the Black Nazarene (Traslacion)	Proc. 1126
+2026-01-15	S	Laguna/San Pablo	Coconut Festival	Proc. 1133
+2026-01-16	S	Batangas/Batangas City	City fiesta	Proc. 1117
+2026-01-20	S	Batangas/Lipa	Coffee Festival	Proc. 1120
+2026-01-20	S	Tarlac/Tarlac City	Charter anniversary	Proc. 1142
+2026-01-21	S	Ilocos Norte/Currimao	Founding anniversary	Proc. 1119
+2026-01-22	S	Bulacan/Guiguinto	Halamanan Festival	Proc. 1131
+2026-01-23	S	Bulacan	First Philippine Republic Day	Proc. 1122
+2026-01-31	S	Batangas/Lian	Liberation Day	Proc. 1115
+2026-02-02	S	Pampanga/Mabalacat	314th founding anniversary	Proc. 1139
+2026-02-02	S	Ilocos Norte	208th founding anniversary	Proc. 1147
+2026-02-02	S	Ilocos Sur	Founding anniversary	Proc. 1151
+2026-02-03	S	Nueva Ecija/Cabanatuan	76th founding anniversary	Proc. 1138
+2026-02-03	S	Laguna/Biñan	81st Liberation Day	Proc. 1144
+2026-02-04	S	Pampanga/San Fernando	25th cityhood anniversary	Proc. 1157
+2026-02-10	S	Pampanga/Bacolor	Bacolor Day	Proc. 1129
+2026-02-10	S	Batangas/Talisay	Founding anniversary	Proc. 1152
+2026-02-10	S	Ilocos Norte/Laoag	Pamulinawen Festival	Proc. 1154
+2026-02-11	S	Camarines Sur/Iriga	Tinagba Festival	Proc. 1153
+2026-02-11	S	Batangas/Ibaan	Founding anniversary	Proc. 1161
+2026-02-13	S	Metro Manila/Parañaque	28th cityhood anniversary	Proc. 1158
+2026-02-16	S	Rizal/Taytay	Local special day	Proc. 1141
+2026-02-17	S	Quezon/Padre Burgos	Padre Burgos Day	Proc. 1155
+2026-02-21	S	Marinduque	Araw ng Marinduque	Proc. 1130
+2026-02-23	S	Benguet/Baguio	Ibaloi Day	Proc. 1125
+2026-02-28	S	Ilocos Norte/Sarrat	Founding anniversary	Proc. 1146
+2026-02-28	S	Cavite/Tanza	112th Araw ng Tanza	Proc. 1148
+2026-03-06	S	Mountain Province/Tadian	Ayyoweng Di Lambak Ed Tadian Festival	Proc. 1171
+2026-03-06	S	Benguet/Buguias	Carrot Festival	Proc. 1180
+2026-03-10	S	Batangas/Tanauan	25th cityhood anniversary	Proc. 1164
+2026-03-13	S	Mountain Province/Bauko	Begnas di Bauko Festival	Proc. 1166
+2026-03-14	S	Rizal/Antipolo	Special election (2nd district)	Proc. 1173
+2026-03-16	S	Pangasinan/Aguilar	Ansakket Festival	Proc. 1168
+2026-03-16	S	Tarlac/Pura	15th Panagyaman Festival	Proc. 1190
+2026-03-17	S	Pangasinan/Tayug	Local special day	Proc. 1176
+2026-03-18	S	Masbate	125th founding anniversary	Proc. 1167
+2026-03-19	S	Oriental Mindoro/Bongabong	Sulyog Festival	Proc. 1182
+2026-03-19	S	Oriental Mindoro/Baco	Banana Festival	Proc. 1183
+2026-03-19	S	Ilocos Norte/Dingras	Ani Festival	Proc. 1191
+2026-03-19	S	Palawan/Brooke's Point	Town fiesta	Proc. 1195
+2026-03-20	S	La Union/San Fernando	Founding anniversary	Proc. 1162
+2026-03-21	S	Oriental Mindoro/Calapan	Founding anniversary	Proc. 1185
+2026-03-21	S	Pangasinan/Urdaneta	Charter anniversary	Proc. 1193
+2026-03-24	S	Albay/Tabaco	Charter day and 25th cityhood anniversary	Proc. 1179
+2026-03-27	S	Metro Manila/Las Piñas	119th founding anniversary and 29th cityhood anniversary	Proc. 1186
+2026-04-01	S	Quezon/Agdangan	Founding anniversary	Proc. 1204
+2026-04-06	S	Occidental Mindoro/Magsaysay	Founding anniversary	Proc. 1197
+2026-04-06	S	Occidental Mindoro/Rizal	Founding anniversary	Proc. 1202
+2026-04-07	S	Mountain Province	Founding anniversary	Proc. 1203
+2026-04-11	S	Quezon/Dolores	191st founding anniversary	Proc. 1200
+2026-04-17	S	Pangasinan/Bolinao	Mangunguna Festival	Proc. 1212
+2026-04-20	S	Tarlac/Tarlac City	28th charter anniversary	Proc. 1207
+2026-04-20	S	Nueva Vizcaya/Alfonso Castañeda	Founding anniversary	Proc. 1208
+2026-04-21	S	Laguna/Calamba	25th cityhood anniversary	Proc. 1218
+2026-04-23	S	Bulacan/Plaridel	Battle of Quingua	Proc. 1209
+2026-04-25	S	Quezon/Infanta	Founding anniversary	Proc. 1210
+2026-04-25	S	Nueva Ecija	Founding anniversary	Proc. 1211
+2026-04-27	S	Rizal/Rodriguez	155th founding anniversary	Proc. 1201
+2026-04-30	S	Quezon/San Francisco	Founding anniversary	Proc. 1219
+2026-04-30	S	Batangas/Calatagan	Cultural Day	Proc. 1220
+2026-05-02	S	Batangas/Bauan	Sublian Festival	Proc. 1215
+2026-05-04	S	Palawan/Taytay	Pasinggatan Festival	Proc. 1216
+2026-05-05	S	Isabela/Santiago	Cityhood anniversary	Proc. 1225
+2026-05-07	S	Laguna/San Pablo	Charter anniversary	Proc. 1134
+2026-05-08	S	Tarlac/Camiling	Town fiesta	Proc. 1217
+2026-05-08	S	Camarines Sur/Caramoan	Founding anniversary	Proc. 1228
+2026-05-11	S	Nueva Ecija/Llanera	71st founding anniversary	Proc. 1230
+2026-05-11	S	Cagayan/Aparri	346th founding anniversary	Proc. 1231
+2026-05-14	S	Bulacan/Pulilan	Kneeling Carabao Festival	Proc. 1213
+2026-05-15	S	Laguna/Calauan	Pinya Festival	Proc. 1221
+2026-05-15	S	Quezon/Lucban	Pahiyas Festival	Proc. 1222
+2026-05-15	S	Quezon/Sariaya	Agawan Festival	Proc. 1232
+2026-05-15	S	Catanduanes/Gigmoto	Founding anniversary	Proc. 1233
+2026-05-15	S	Quezon/Tayabas	Mayohan sa Tayabas Festival	Proc. 1236
+2026-05-20	S	Cagayan/Gattaran	Founding anniversary	Proc. 1242
+2026-05-20	S	Pangasinan/Sual	Founding anniversary	Proc. 1258
+2026-05-21	S	Metro Manila/Malabon	427th founding anniversary	Proc. 1234
+2026-05-23	S	Batangas/Calaca	Birth anniversary of Gen. Eleuterio Marasigan	Proc. 1241
+2026-05-26	S	Bulacan/Baliwag	Founding anniversary	Proc. 1235
+2026-06-04	S	Laguna/Santa Cruz	Kesong Puti Festival	Proc. 1281
+2026-06-05	S	Tarlac/Bamban	Bamban Day	Proc. 1260
+2026-06-09	S	Batangas/Rosario	Founding anniversary	Proc. 1275
+2026-06-11	S	Rizal	125th founding anniversary	Proc. 1287
+2026-06-15	S	Pampanga	Mt. Pinatubo eruption anniversary	Proc. 1280
+2026-06-15	S	Cagayan/Camalaniugan	430th founding anniversary	Proc. 1284
+2026-06-15	S	Pampanga/Angeles	Mt. Pinatubo eruption anniversary	Proc. 1293
+2026-06-15	S	Cagayan/Buguey	430th founding anniversary	Proc. 1294
+2026-06-16	S	Camarines Sur/Pili	71st founding anniversary	Proc. 1297
+2026-06-16	S	Benguet/La Trinidad	Founding anniversary	Proc. 1298
+2026-06-17	S	Pangasinan/Laoac	Founding anniversary	Proc. 1255
+2026-06-17	S	Isabela/Quirino	59th founding anniversary	Proc. 1262
+2026-06-18	S	Quezon/Patnanungan	Founding anniversary	Proc. 1246
+2026-06-18	S	Nueva Vizcaya/Ambaguio	Founding anniversary	Proc. 1266
+2026-06-18	S	Camarines Sur/Presentacion	Founding anniversary	Proc. 1271
+2026-06-18	S	Occidental Mindoro/Calintaan	Founding anniversary	Proc. 1272
+2026-06-18	S	Mountain Province/Barlig	60th founding anniversary	Proc. 1303
+2026-06-19	S	Ilocos Norte/Laoag	Charter anniversary	Proc. 1278
+2026-06-20	S	Batangas/Lipa	79th cityhood anniversary	Proc. 1304
+2026-06-20	S	Quezon/Guinayangan	Founding anniversary	Proc. 1305
+2026-06-22	S	Ilocos Norte/Marcos	Marcos Town Day	Proc. 1251
+2026-06-22	S	Nueva Vizcaya/Villaverde	69th founding anniversary	Proc. 1257
+2026-06-22	S	Oriental Mindoro/Socorro	Founding anniversary	Proc. 1306
+2026-06-23	S	Kalinga/Tabuk	Founding anniversary	Proc. 1259
+2026-06-23	S	Ilocos Norte/Batac	19th charter anniversary	Proc. 1307
+2026-06-24	S	Quezon/Tiaong	Town fiesta	Proc. 1279
+2026-06-24	S	Metro Manila/San Juan	Wattah Wattah Festival	Proc. 1282
+2026-06-24	S	Albay/Tabaco	Tabak Festival	Proc. 1286
+2026-06-24	S	Batangas/Balayan	Parada ng Lechon	Proc. 1291
+2026-06-24	S	Masbate	Bagat-Dagat Festival	Proc. 1308
+2026-06-24	S	La Union/Caba	Founding anniversary	Proc. 1309
+2026-06-24	S	Metro Manila/Manila	455th founding anniversary	Proc. 1320
+2026-06-24	S	Batangas/Lian	Sambulos Festival	Proc. 1321
+2026-06-25	S	Apayao/Conner	Founding anniversary	Proc. 1253
+2026-06-25	S	Mountain Province/Sagada	Founding anniversary	Proc. 1254
+2026-06-25	S	Apayao/Calanasan	Founding anniversary	Proc. 1310
+2026-06-25	S	Mountain Province/Sabangan	Founding anniversary	Proc. 1311
+2026-06-29	S	Quezon/Mulanay	Town fiesta	Proc. 1324
+2026-07-03	S	Nueva Vizcaya/Bambang	Bambang Day	Proc. 1332
+2026-07-10	S	Laguna/Santa Rosa	22nd cityhood anniversary	Proc. 1329
+2026-07-15	S	Quezon/Mauban	Araw ng Mauban	Proc. 1330
+2026-07-15	S	Abra;Apayao;Benguet;Ifugao;Kalinga;Mountain Province	39th founding anniversary	Proc. 1334
+2026-07-15	S	Camarines Sur/Calabanga	Founding anniversary	Proc. 1343
+2026-07-16	S	Albay/Malilipot	Lubid Festival	Proc. 1341
+2026-07-16	S	Pangasinan/Aguilar	Founding anniversary	Proc. 1344
+2026-07-21	S	Pampanga/Mabalacat	14th cityhood anniversary	Proc. 1328
+2026-07-21	S	Quezon/General Nakar	Founding anniversary	Proc. 1351
+2026-07-22	S	Rizal/Pililla	Town fiesta and founding anniversary	Proc. 1352
+2026-07-23	S	Batangas/Batangas City	Founding anniversary	Proc. 1326
+2026-07-25	S	Isabela/Santiago	Aggaw na Naturales Day	Proc. 1347
+2026-07-25	S	Catanduanes/Panganiban	Founding anniversary	Proc. 1367
+2026-07-30	S	La Union/Sudipen	Founding anniversary	Proc. 1353
+2026-07-31	S	Palawan/San Vicente	Malagnang Festival	Proc. 1358
+2026-08-01	S	Cavite/Kawit	Kawit Day	Proc. 1359
+2026-08-04	S	Laguna/Cabuyao	14th cityhood anniversary	Proc. 1348
+2026-08-04	S	Batangas/San Pascual	Founding anniversary	Proc. 1360
+2026-08-06	S	Sorsogon/Pilar	Founding anniversary	Proc. 1361
+2026-08-07	S	Nueva Vizcaya/Bayombong	Town fiesta	Proc. 1371
+2026-08-07	S	La Union/Rosario	Founding anniversary	Proc. 1383
+2026-08-10	S	Quezon/Gumaca	Birth anniversary of Lorenzo M. Tañada Sr	Proc. 1362
+2026-08-13	S	Camarines Sur/Bombon	Founding anniversary	Proc. 1384
+2026-08-14	S	Masbate/Pio V. Corpus	Limbuhan Festival	Proc. 1387
+2026-08-15	S	Bulacan	Founding anniversary	Proc. 1376
+2026-08-15	S	Catanduanes/Viga	Araw ng Viga	Proc. 1377
+2026-08-17	S	Cagayan/Tuguegarao	Pavvurulun Afi Festival	Proc. 1368
+2026-08-18	S	Cagayan/Solana	Founding anniversary	Proc. 1364
+2026-08-19	S	Nueva Vizcaya/Kasibu	Citrus Festival	Proc. 1379
+2026-08-19	S	Rizal/Angono	Anniversary of separation from Binangonan	Proc. 1380
+2026-08-20	S	Masbate/Esperanza	Lilas Festival	Proc. 1333
+2026-08-20	S	Quezon/Lucena	65th charter anniversary (Araw ng Lucena)	Proc. 1365
+2026-08-20	S	Marinduque/Gasan	417th founding anniversary	Proc. 1381
+2026-08-24	S	Camarines Sur/Baao	Founding anniversary	Proc. 1396
+2026-08-26	S	Quezon/Buenavista	Founding anniversary	Proc. 1391
+2026-08-27	S	Pampanga/Minalin	412th founding anniversary	Proc. 1386
+2026-08-27	S	Cagayan/Alcala	Pasayak Festival	Proc. 1393
+2026-08-28	S	Romblon/San Agustin	Kalipayan Festival	Proc. 1397
+2026-08-29	S	Cavite/Dasmariñas	Special election (4th district)	Proc. 1369
+2026-09-03	S	Camarines Sur/Iriga	56th charter anniversary	Proc. 1398
+2026-09-03	S	Batangas/Calaca	Cityhood anniversary	Proc. 1408
+2026-09-07	S	Batangas/Santo Tomas	Cityhood anniversary	Proc. 1409
+2026-09-09	S	Romblon/Banton	Hanrumanan Festival	Proc. 1422
+2026-09-10	S	Pampanga/Macabebe	Town fiesta	Proc. 1411
+2026-09-10	S	Quirino	55th founding anniversary	Proc. 1415
+2026-09-11	S	Abra;Apayao;Benguet;Ifugao;Kalinga;Mountain Province	Sipat anniversary	Proc. 1389
+2026-09-11	S	Ilocos Norte	Birth anniversary of Ferdinand E. Marcos Sr	Proc. 1421
+2026-09-12	S	Laguna/Cavinti	Reconstitution Day	Proc. 1436
+2026-09-14	S	Quezon/Sariaya	Town fiesta	Proc. 1435
+2026-09-15	S	Ifugao/Hingyon	Founding anniversary	Proc. 1423
+2026-09-16	S	Ilocos Norte/Piddig	Basi Revolt of 1807	Proc. 1402
+2026-09-16	S	Ilocos Sur/San Ildefonso	Basi Revolt of 1807	Proc. 1413
+2026-09-16	S	Mountain Province/Bontoc	Founding anniversary	Proc. 1416
+2026-09-18	S	Oriental Mindoro/Victoria	73rd founding anniversary	Proc. 1419
+2026-09-18	S	Camarines Sur/Bombon;Camarines Sur/Bula;Camarines Sur/Calabanga;Camarines Sur/Camaligan;Camarines Sur/Canaman;Camarines Sur/Gainza;Camarines Sur/Libmanan;Camarines Sur/Magarao;Camarines Sur/Milaor;Camarines Sur/Minalabac;Camarines Sur/Ocampo;Camarines Sur/Pamplona;Camarines Sur/Pasacao;Camarines Sur/Pili;Camarines Sur/San Fernando;Camarines Sur/Siruma;Masbate/San Pascual	Friday before the Peñafrancia feast	Proc. 1444
+2026-09-21	S	Rizal/San Mateo	454th founding anniversary	Proc. 1424
+2026-09-21	S	Ifugao/Aguinaldo	Founding anniversary	Proc. 1437
+2026-09-22	S	Laguna/Lumban	Founding anniversary	Proc. 1446
+2026-09-28	S	Isabela/Alicia	Founding anniversary	Proc. 1430
+2026-09-28	S	Isabela/Luna	77th founding anniversary	Proc. 1450
+2026-09-29	S	Sorsogon/Irosin	Paray Festival	Proc. 1432
+2026-09-29	S	Quezon/Tayabas	City fiesta	Proc. 1438
+2026-09-29	S	Bulacan/San Rafael	Angel Festival	Proc. 1449
+2026-09-30	S	Masbate/Masbate City	26th cityhood anniversary	Proc. 1433
+2026-09-30	S	Nueva Vizcaya/Bagabag	Founding anniversary	Proc. 1439
+2026-10-01	S	Palawan/Aborlan	Town fiesta	Proc. 1452
+2026-10-01	S	Ifugao/Hungduan	Founding anniversary	Proc. 1458
+2026-10-01	S	Oriental Mindoro/Gloria	Founding anniversary and the Kawayanan Festival	Proc. 1461
+2026-10-02	S	Nueva Vizcaya/Solano	Solano Day	Proc. 1453
+2026-10-02	S	Mountain Province	Provincial Indigenous Peoples Day	Proc. 1463
+2026-10-05	S	Camarines Sur/Del Gallego	Founding anniversary	Proc. 1441
+2026-10-12	S	Batangas/Talisay	Battle of Batangas	Proc. 1466
+2026-10-12	S	Sorsogon/Pilar	Kasulad Festival	Proc. 1477
+2026-10-14	S	Laguna/Victoria	77th founding anniversary and the 25th Itik Festival	Proc. 1455
+2026-10-17	S	Sorsogon	132nd founding anniversary	Proc. 1478
+2026-10-20	S	Ilocos Norte/Batac	160th birth anniversary of Gen. Artemio Ricarte	Proc. 1470
+2026-10-23	S	Pampanga/Angeles	Tigtigan Terakan Keng Dalan Festival	Proc. 1472
+2026-10-23	S	Ilocos Sur/Narvacan	Aldaw ti Wayaway, Ili a Narvacan	Proc. 1473
+2026-10-24	S	Occidental Mindoro/Abra de Ilog	Town fiesta	Proc. 1488
+2026-10-24	S	Quezon/Real	Town fiesta	Proc. 1489
+2026-10-26	S	Batangas/Lemery	Founding anniversary	Proc. 1484
+2026-11-04	S	Quezon	Death anniversary of Hermano Puli	Proc. 1481
+2026-11-07	S	Batangas/Cuenca	150th founding anniversary	Proc. 1483
+2026-11-11	S	Batangas/Taysan	Founding anniversary	Proc. 1500
+2026-11-11	S	Batangas/Taal	Parada ng mga Kabayo and Tiburin Race	Proc. 1509
+2026-11-12	S	Quezon/Gumaca	444th founding anniversary	Proc. 1486
+2026-11-13	S	Rizal/Tanay	16th Hane Festival	Proc. 1510
+2026-11-14	S	Tarlac/San Clemente	150th founding anniversary	Proc. 1511
+2026-11-16..2026-11-18	S	Metro Manila	ASEAN Summit	Proc. 1447
+2026-11-16	S	Occidental Mindoro	76th founding anniversary	Proc. 1512
+2026-11-17	S	Masbate/Aroroy	Founding anniversary	Proc. 1502
+2026-11-19	S	Quezon/San Antonio	Founding anniversary	Proc. 1495
+2026-11-20	S	Benguet/Itogon	126th founding anniversary	Proc. 1496
+2026-11-20	S	Nueva Vizcaya/Dupax del Sur	Founding anniversary	Proc. 1503
+2026-11-23	S	Rizal/Angono	Higantes Festival	Proc. 1504
+2026-11-25	S	La Union/Luna	Town fiesta	Proc. 1505
+2026-11-25	S	Cagayan/Gattaran	Panagsalukag Festival	Proc. 1506
+2026-11-26	S	Cavite/Dasmariñas	Founding anniversary	Proc. 1507
+2026-11-27	S	La Union/Burgos	101st founding anniversary	Proc. 1497
+2026-12-09	S	Nueva Ecija/Muñoz	Charter anniversary	Proc. 1513

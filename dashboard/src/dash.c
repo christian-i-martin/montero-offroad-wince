@@ -1,15 +1,23 @@
 /* Montero dashboard: replaces \SD\Navigation\Navigation.exe on the Skypine 6982E head unit
- * (Windows CE 6, ARM). Two full-screen pages: the dashboard, and the car info page opened with the
- * car button at the right end of its header (Back returns). Layout in render.c, logic in model.c.
+ * (Windows CE 6, ARM). Three full-screen pages: the dashboard; the car info page, opened with the
+ * car button at the right end of its header; and the map page, opened by tapping the car on the
+ * map, where a finger drags the map (mapview.c). Back returns from either. Layout in render.c,
+ * logic in model.c.
  *
  * Data sources (all read-only, see docs/vehicle-data-research.md):
  *   GPS       NMEA from COM1: at 38400 baud, opened for reading only
  *   CarInfo   joins Main.exe's message bus as "TerminalA" (0x1A), reads the shared-memory ring and
  *             posts the factory Car Info screen's read requests with sender 0x14 every 5 s
  *   lights    window message 0x52A index 9 broadcast by Main.exe, and CarInfo frame 0x33
- *   map       *.pack files in the Map folder at the SD card root (tools/map/), opened read-only
+ *   map       the *.vmap file in the VMap folder at the SD card root (tools/vmap/), opened read-only;
+ *             drawn by the program itself (vmap.c), turned with the car's heading
  *   address   the *.addr file in the same folder (tools/address/), read-only, looked up on its own
  *             thread; shown on screen only, never logged
+ *   holidays  holidays.txt next to this exe (tools/holidays/), read-only: today's national holidays,
+ *             and local ones for the town nearest the GPS position (the list's own town centres,
+ *             not the map); a notification at the top of the map shows them (island.c), then
+ *             shrinks into a round button left of the map that opens it again; the town and the
+ *             local holidays are shown on screen only, never logged
  * Main.exe shows and hides this program by its window title "GPS - Navigation" (SP_MAIN.ini).
  * Hold the clock for 2 seconds for the menu (file manager, close).
  * Never sends EndCommunication (81 01 00), 0x6D1 or 0x6D4; never writes to vehicle ports.
@@ -23,13 +31,17 @@
 #include "busring.h"
 #include "carinfo.h"
 #include "addr.h"
-#include "map.h"
+#include "holiday.h"
+#include "island.h"
+#include "mapview.h"
 #include "model.h"
 #include "nmea.h"
 #include "render.h"
 #include "sun.h"
+#include "vmap.h"
+#include "vtiles.h"
 
-#define DASH_VERSION "0.6.0"
+#define DASH_VERSION "0.9.0"
 #define WINDOW_CLASS L"MonteroDashboard"
 #define WINDOW_TITLE L"GPS - Navigation" /* SP_MAIN.ini [NAVIGATION] TITLE */
 
@@ -58,6 +70,9 @@
 #define TIMER_HOLD 5        /* long press on the clock */
 #define TIMER_STATS 6       /* 10 min: one summary line in the log */
 #define TIMER_BUS_RETRY 7   /* 30 s: try to join the bus again */
+#define TIMER_ISLAND 8      /* 15 ms while the holiday notification moves */
+#define TIMER_ANIM 9        /* about 100 ms while the map glides to a new GPS position and heading */
+#define TIMER_MAPWORK 10    /* 1 ms while map pictures are missing: one is drawn when nothing else waits */
 
 #ifndef ANTIALIASED_QUALITY
 #define ANTIALIASED_QUALITY 4
@@ -127,13 +142,17 @@ static DWORD g_car_tick;           /* last CarInfo reply */
 static int g_lights;               /* last lights state seen on the bus */
 static DashModel g_model;
 static int g_menu, g_has_files;
-static int g_carinfo;             /* the car info page is shown instead of the dashboard */
-static int g_carinfo_cat;         /* its category (CARINFO_GENERAL ...), kept while the program runs */
+enum { PAGE_DASHBOARD, PAGE_CARINFO, PAGE_MAP };
+static int g_page;                /* the page shown */
+static int g_carinfo_cat;         /* the car info page's category (CARINFO_GENERAL ...), kept while the program runs */
+static MapView g_view;            /* the map page's view (never logged: its middle is a position) */
 static WCHAR g_files_path[MAX_PATH];
 #define DEFAULT_UTC_OFFSET_MIN 480 /* UTC+8 until another time zone is chosen in the menu */
 static int g_tz_set = 1, g_tz_min = DEFAULT_UTC_OFFSET_MIN; /* time zone in use, minutes from UTC */
+static double g_saved_zoom = -1;  /* the dashboard map's zoom from dashboard-settings.txt (-1: none) */
 
-/* dashboard-settings.txt next to the exe, one line: utc_offset_minutes=<n> */
+/* dashboard-settings.txt next to the exe: utc_offset_minutes=<n>, and map_zoom_tenths=<n> (the
+ * dashboard map's zoom x 10, the last one chosen with + and -). */
 static void settings_path(WCHAR *path)
 {
     _snwprintf(path, MAX_PATH, L"%sdashboard-settings.txt", g_dir);
@@ -154,15 +173,29 @@ static const char *find_text(const char *text, const char *key, int len)
     return NULL;
 }
 
+/* The whole number after key in text, or `missing`. */
+static int setting(const char *text, const char *key, int key_len, int missing)
+{
+    const char *p = find_text(text, key, key_len);
+    int sign = 1, v = 0, digits = 0;
+    if (p == NULL)
+        return missing;
+    p += key_len;
+    if (*p == '-' || *p == '+')
+        sign = *p++ == '-' ? -1 : 1;
+    for (; *p >= '0' && *p <= '9' && digits < 4; p++, digits++)
+        v = v * 10 + (*p - '0');
+    return digits ? v * sign : missing;
+}
+
 static void load_settings(void)
 {
-    static const char key[] = "utc_offset_minutes=";
+    static const char tz_key[] = "utc_offset_minutes=", zoom_key[] = "map_zoom_tenths=";
     WCHAR path[MAX_PATH];
-    char buf[128];
-    const char *p;
+    char buf[160];
     DWORD got = 0;
     HANDLE h;
-    int sign = 1, v = 0, digits = 0;
+    int v;
 
     settings_path(path);
     h = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -174,29 +207,25 @@ static void load_settings(void)
         got = 0;
     CloseHandle(h);
     buf[got] = '\0';
-    p = find_text(buf, key, (int)sizeof key - 1);
-    if (p == NULL)
-        return;
-    p += sizeof key - 1;
-    if (*p == '-' || *p == '+')
-        sign = *p++ == '-' ? -1 : 1;
-    for (; *p >= '0' && *p <= '9' && digits < 4; p++, digits++)
-        v = v * 10 + (*p - '0');
-    v *= sign;
-    if (digits && v >= -720 && v <= 840) {
+    v = setting(buf, tz_key, (int)sizeof tz_key - 1, 100000);
+    if (v >= -720 && v <= 840) {
         g_tz_set = 1;
         g_tz_min = v;
         log_line("[clock] time zone from dashboard-settings.txt: %+d min", v);
     }
+    v = setting(buf, zoom_key, (int)sizeof zoom_key - 1, 0);
+    if (v >= 20 && v <= 200)
+        g_saved_zoom = v / 10.0;
 }
 
 static void save_settings(void)
 {
     WCHAR path[MAX_PATH];
-    char line[48];
+    char line[96];
     DWORD written;
     HANDLE h;
-    int len = _snprintf(line, sizeof line, "utc_offset_minutes=%d\r\n", g_tz_min);
+    int len = _snprintf(line, sizeof line, "utc_offset_minutes=%d\r\nmap_zoom_tenths=%d\r\n", g_tz_min,
+                        (int)(g_model.map_zoom * 10.0 + 0.5));
 
     settings_path(path);
     h = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -755,19 +784,43 @@ static void gdi_text(void *ctx, int x, int baseline, int font, unsigned rgb, con
 static HDC g_back;
 static HBITMAP g_back_bitmap;
 
-/* ---------------------------------------------------------------- offline map (read-only) */
+/* ---------------------------------------------------------------- vector map (read-only) */
 
-/* The map files sit in a Map folder at the SD card root, beside the Navigation folder, so that
- * installing a new dashboard does not mean copying the map again: the dark map in Map, the light
- * one for the day in Map\Day. map.c composes the picture straight into the back buffer (a 16-bit
- * DIB section, see create_back_buffer), where the panels are then tinted over it. The full screen
- * needs up to 15 tiles at once (5 across, 3 down), so 20 are kept (128 KB each). */
-#define MAP_CACHE_TILES 20
-static MapSet g_map;
-static int g_map_ok;
-static int g_map_style = -1;        /* style asked for last: MAP_DARK at night, MAP_LIGHT by day */
-static int g_zoom_touched;          /* the zoom buttons were used: keep that zoom, else the highest level */
-static DWORD g_map_slowest_ms;
+/* The map is the vector map (*.vmap, tools/vmap/) in a VMap folder at the SD card root, beside the
+ * Navigation folder: the head unit draws it itself (vmap.c), at any zoom and turned with the car.
+ * Frames come from map pictures kept in memory (vtiles.c: 256 x 256 pieces of the map, drawn once
+ * while nothing else happens, then moved and turned per frame) while the map moves; once it rests,
+ * it is drawn in full, sharp, once, and that picture is reused until the view changes. Labels and
+ * place markers are placed afresh at rest and moved with the map while it moves. The address file
+ * stays in the Map folder (sd_folder). */
+#define MAP_PICTURES 400            /* map pictures kept, 129 KB each (52 MB; 348 MB were free on the unit) */
+#define MAP_PICTURES_LOW 120
+#define MAP_DATA_TILES 128          /* map file tiles kept decoded */
+#define MAP_TOP_ZOOM 19.0           /* the closest zoom offered */
+#define MAP_ZOOM_STEP 0.5           /* each press of + or - */
+#define GLIDE_MS 1000               /* the map glides to each new GPS position and heading in a second ... */
+#define ANIM_MS 100                 /* ... at most ten frames a second, fewer when a frame takes long */
+static VMap g_vmap;
+static VTiles g_tiles;
+static VFont g_mapfont;
+static unsigned char *g_mapfont_data;
+static int g_map_ok;                /* a map file is open: the map is drawn */
+static MapBox g_map_box;            /* the box it covers (Web Mercator) */
+/* the glide: the map moves from where it is shown to the newest GPS position and heading */
+static int g_glide, g_glide_known, g_anim_timer;
+static double g_glide_mx0, g_glide_my0, g_glide_b0, g_glide_mx1, g_glide_my1, g_glide_b1;
+static DWORD g_glide_start, g_anim_ms = ANIM_MS;
+/* the sharp map at rest, kept while the view stays */
+static unsigned *g_rest;
+static int g_rest_ok;
+static VMapView g_rest_view;
+/* for the log: frames while the map moves and their slowest, sharp drawings and their slowest */
+static unsigned g_moving_frames, g_moving_sum_ms, g_sharp_count, g_sharp_sum_ms;
+static DWORD g_moving_slowest_ms, g_sharp_slowest_ms;
+/* the map page, for the log: times opened, frames drawn while dragging, the slowest of them
+ * (map, panels and copy to the screen) */
+static unsigned g_page_opened, g_drag_frames;
+static DWORD g_drag_slowest_ms, g_drag_slowest_all_ms; /* this time the page is open; since the start */
 
 static int file_read_at(void *file, unsigned offset, void *buffer, unsigned size)
 {
@@ -781,15 +834,15 @@ static int file_read_at(void *file, unsigned offset, void *buffer, unsigned size
 }
 
 /* Names starting with a dot are skipped. When a Mac copies files to the FAT card, it adds a small
- * "._name" side file next to each one (macOS keeps file details there), which matches "*.pack" and
+ * "._name" side file next to each one (macOS keeps file details there), which matches "*.vmap" and
  * "*.addr" too but is not a map or address file. */
 static int hidden_name(const WCHAR *name)
 {
     return name[0] == L'.';
 }
 
-/* The Map folder at the SD card root, with a trailing backslash: "\SD\Navigation\" -> "\SD\Map\". */
-static void sd_map_folder(WCHAR *folder)
+/* A folder at the SD card root, with a trailing backslash: "\SD\Navigation\" -> "\SD\<name>\". */
+static void sd_folder(WCHAR *folder, const WCHAR *name)
 {
     WCHAR root[MAX_PATH], *slash;
     wcscpy(root, g_dir);
@@ -800,92 +853,233 @@ static void sd_map_folder(WCHAR *folder)
         slash[1] = 0;
     else
         wcscpy(root, L"\\");
-    _snwprintf(folder, MAX_PATH, L"%sMap\\", root);
+    _snwprintf(folder, MAX_PATH, L"%s%s\\", root, name);
     folder[MAX_PATH - 1] = 0;
 }
 
-/* Opens every *.pack in folder (read-only) as a pack of the given style. */
-static void add_packs(const WCHAR *folder, int style, int *bad, int *hidden)
+static unsigned clock_us(void)
 {
-    WCHAR path[MAX_PATH];
-    WIN32_FIND_DATAW found;
-    HANDLE find;
-
-    _snwprintf(path, MAX_PATH, L"%s*.pack", folder);
-    path[MAX_PATH - 1] = 0;
-    find = FindFirstFileW(path, &found);
-    if (find == INVALID_HANDLE_VALUE)
-        return;
-    do {
-        HANDLE h;
-        if (hidden_name(found.cFileName)) {
-            (*hidden)++;
-            continue;
-        }
-        _snwprintf(path, MAX_PATH, L"%s%s", folder, found.cFileName);
-        path[MAX_PATH - 1] = 0;
-        h = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-        if (h == INVALID_HANDLE_VALUE) {
-            (*bad)++;
-        } else if (!map_add_pack_style(&g_map, h, file_read_at, style)) {
-            CloseHandle(h);
-            (*bad)++;
-        }
-    } while (FindNextFileW(find, &found));
-    FindClose(find);
+    return GetTickCount() * 1000u;
 }
 
-/* The zoom range of the style in use; the highest level unless the zoom buttons were used. */
-static void map_zoom_range(void)
+/* The labels' font (the Barlow file the dashboard ships), read into memory for vfont.c. */
+static int load_map_font(void)
 {
-    g_model.map_min_zoom = g_map.min_zoom;
-    g_model.map_max_zoom = g_map.max_zoom;
-    if (!g_zoom_touched || g_model.map_zoom > g_map.max_zoom)
-        g_model.map_zoom = g_map.max_zoom;
-    if (g_model.map_zoom < g_map.min_zoom)
-        g_model.map_zoom = g_map.min_zoom;
-    while (g_model.map_zoom > g_map.min_zoom && !map_has_zoom(&g_map, g_model.map_zoom))
-        g_model.map_zoom--;
+    WCHAR path[MAX_PATH];
+    HANDLE h;
+    DWORD size, got = 0;
+    _snwprintf(path, MAX_PATH, L"%sfonts\\Barlow-Medium.ttf", g_dir);
+    path[MAX_PATH - 1] = 0;
+    h = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE)
+        return 0;
+    size = GetFileSize(h, NULL);
+    if (size != 0xFFFFFFFF && size < (4u << 20)) {
+        g_mapfont_data = (unsigned char *)malloc(size);
+        if (g_mapfont_data && (!ReadFile(h, g_mapfont_data, size, &got, NULL) || got != size)) {
+            free(g_mapfont_data);
+            g_mapfont_data = NULL;
+        }
+    }
+    CloseHandle(h);
+    return g_mapfont_data != NULL && vf_load(&g_mapfont, g_mapfont_data, size);
 }
 
 static void map_open(void)
 {
-    WCHAR folder[MAX_PATH], day[MAX_PATH];
-    int bad = 0, hidden = 0;
+    WCHAR folder[MAX_PATH], path[MAX_PATH];
+    WIN32_FIND_DATAW found;
+    HANDLE find, h = INVALID_HANDLE_VALUE;
+    int hidden = 0, bad = 0;
+    double lowest, highest;
 
-    if (!map_init(&g_map, MAP_CACHE_TILES)) {
-        log_line("[map] not enough memory for the map");
-        return;
+    sd_folder(folder, L"VMap");
+    _snwprintf(path, MAX_PATH, L"%s*.vmap", folder);
+    path[MAX_PATH - 1] = 0;
+    find = FindFirstFileW(path, &found);
+    if (find != INVALID_HANDLE_VALUE) {
+        do {
+            if (hidden_name(found.cFileName)) {
+                hidden++;
+                continue;
+            }
+            _snwprintf(path, MAX_PATH, L"%s%s", folder, found.cFileName);
+            path[MAX_PATH - 1] = 0;
+            h = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+            if (h != INVALID_HANDLE_VALUE && vmap_open(&g_vmap, h, file_read_at, MAP_DATA_TILES))
+                break;
+            if (h != INVALID_HANDLE_VALUE)
+                CloseHandle(h);
+            h = INVALID_HANDLE_VALUE;
+            bad++;
+        } while (FindNextFileW(find, &found));
+        FindClose(find);
     }
-    g_map_ok = 1;
-    sd_map_folder(folder);
-    _snwprintf(day, MAX_PATH, L"%sDay\\", folder);
-    day[MAX_PATH - 1] = 0;
-    add_packs(folder, MAP_DARK, &bad, &hidden);
-    add_packs(day, MAP_LIGHT, &bad, &hidden);
-    if (g_map.count == 0) {
-        log_line("[map] no map files in the Map folder at the SD card root (%d unreadable, %d ._ files skipped)", bad,
+    if (h == INVALID_HANDLE_VALUE) {
+        log_line("[map] no vector map in the VMap folder at the SD card root (%d unreadable, %d ._ files skipped)", bad,
                  hidden);
         return;
     }
-    map_use_style(&g_map, MAP_DARK);
-    map_zoom_range();
-    log_line("[map] %d dark and %d light (Day folder) map files, zoom %d to %d, showing %d (%d unreadable, %d ._ "
-             "files skipped)", g_map.style_packs[MAP_DARK], g_map.style_packs[MAP_LIGHT], g_map.min_zoom,
-             g_map.max_zoom, g_model.map_zoom, bad, hidden);
+    g_vmap.clock = clock_us;
+    if (load_map_font())
+        vmap_set_font(&g_vmap, &g_mapfont);
+    else
+        log_line("[map] cannot read fonts\\Barlow-Medium.ttf: the map has no names");
+    if (!vt_init(&g_tiles, &g_vmap, MAP_PICTURES) && !vt_init(&g_tiles, &g_vmap, MAP_PICTURES_LOW)) {
+        log_line("[map] not enough memory for the map pictures");
+        vmap_close(&g_vmap);
+        CloseHandle(h);
+        return;
+    }
+    g_rest = (unsigned *)malloc(SCREEN_W * SCREEN_H * sizeof(unsigned));
+    vmap_mercator(g_vmap.north, g_vmap.west, &g_map_box.left, &g_map_box.top);
+    vmap_mercator(g_vmap.south, g_vmap.east, &g_map_box.right, &g_map_box.bottom);
+    vmap_zoom_range(&g_vmap, &lowest, &highest);
+    g_model.map_min_zoom = lowest;
+    g_model.map_max_zoom = highest < MAP_TOP_ZOOM ? highest : MAP_TOP_ZOOM;
+    g_model.map_zoom = g_saved_zoom > 0 ? g_saved_zoom : MAP_DEFAULT_ZOOM;
+    if (g_model.map_zoom < g_model.map_min_zoom)
+        g_model.map_zoom = g_model.map_min_zoom;
+    if (g_model.map_zoom > g_model.map_max_zoom)
+        g_model.map_zoom = g_model.map_max_zoom;
+    g_map_ok = 1;
+    log_line("[map] vector map: %d rules, %d data zooms, zoom %.1f to %.1f, showing %.1f%s; %d pictures at most (%d ._ "
+             "files skipped)", g_vmap.nlayers, g_vmap.nlevels, g_model.map_min_zoom, g_model.map_max_zoom,
+             g_model.map_zoom, g_saved_zoom > 0 ? " (remembered)" : "", g_tiles.count, hidden);
 }
 
-/* Dark map at night, light map by day (the dark one when there is no light one). */
-static void map_follow_colours(void)
+/* One step in or out from zoom, kept inside the map's range. */
+static double zoom_step(double zoom, int direction)
 {
-    int want = g_model.night ? MAP_DARK : MAP_LIGHT, used;
-    if (!g_map_ok || g_map.count == 0 || want == g_map_style)
+    double z = zoom + direction * MAP_ZOOM_STEP;
+    if (z < g_model.map_min_zoom)
+        z = g_model.map_min_zoom;
+    if (z > g_model.map_max_zoom)
+        z = g_model.map_max_zoom;
+    return z;
+}
+
+static double turn_between(double from, double to)
+{
+    double d = to - from;
+    while (d > 180)
+        d -= 360;
+    while (d < -180)
+        d += 360;
+    return d;
+}
+
+/* Where the glide is now: the model's map view (the position drawn at the car, the heading up). */
+static void glide_now(DWORD now)
+{
+    double f = g_glide ? (double)(now - g_glide_start) / GLIDE_MS : 1.0, b;
+    if (f >= 1.0) {
+        f = 1.0;
+        g_glide = 0;
+    }
+    g_model.map_mx = g_glide_mx0 + (g_glide_mx1 - g_glide_mx0) * f;
+    g_model.map_my = g_glide_my0 + (g_glide_my1 - g_glide_my0) * f;
+    b = g_glide_b0 + turn_between(g_glide_b0, g_glide_b1) * f;
+    while (b < 0)
+        b += 360;
+    while (b >= 360)
+        b -= 360;
+    g_model.map_bearing = b;
+}
+
+/* After each model update: the newest GPS position, and the heading while it comes from GPS (when
+ * the car stops, the map keeps its last heading rather than the car's 8-point compass). The map
+ * glides there unless the change is too small to see. */
+static void glide_to_model(void)
+{
+    DWORD now = GetTickCount();
+    double mx, my, b = g_glide_b1, scale, still;
+    if (!g_model.have_position)
         return;
-    g_map_style = want;
-    used = map_use_style(&g_map, want);
-    map_zoom_range();
-    log_line("[map] %s map, zoom %d to %d, showing %d", used == MAP_LIGHT ? "light" : "dark", g_map.min_zoom,
-             g_map.max_zoom, g_model.map_zoom);
+    vmap_mercator(g_model.lat, g_model.lon, &mx, &my);
+    if (g_model.heading_src == SRC_GPS)
+        b = g_model.heading_deg;
+    if (!g_glide_known) { /* the first position: no glide */
+        g_glide_known = 1;
+        g_glide_mx0 = g_glide_mx1 = mx;
+        g_glide_my0 = g_glide_my1 = my;
+        g_glide_b0 = g_glide_b1 = g_model.heading_src == SRC_GPS ? b : 0.0;
+        glide_now(now);
+        return;
+    }
+    scale = 256.0 * vmap_exp2(g_model.map_zoom);
+    /* too small to see, or, parked (under 2 km/h), the GPS position wandering by a few metres: the
+     * map stays (each glide ends in a sharp drawing of the whole map) */
+    still = g_model.have_speed && g_model.speed_kmh < 2.0f ? 4.0 : 0.3;
+    if ((mx - g_glide_mx1) * scale < still && (g_glide_mx1 - mx) * scale < still && (my - g_glide_my1) * scale < still &&
+        (g_glide_my1 - my) * scale < still && turn_between(g_glide_b1, b) < 0.5 && turn_between(g_glide_b1, b) > -0.5)
+        return;
+    glide_now(now);
+    g_glide_mx0 = g_model.map_mx;
+    g_glide_my0 = g_model.map_my;
+    g_glide_b0 = g_model.map_bearing;
+    g_glide_mx1 = mx;
+    g_glide_my1 = my;
+    g_glide_b1 = b;
+    g_glide_start = now;
+    g_glide = 1;
+    if (!g_anim_timer) {
+        SetTimer(g_main, TIMER_ANIM, g_anim_ms, NULL);
+        g_anim_timer = 1;
+    }
+}
+
+/* The view a frame shows (the map page's or the dashboard's), for drawing missing pictures. */
+static void map_view_now(VMapView *v)
+{
+    memset(v, 0, sizeof *v);
+    v->style = g_model.night ? 0 : 1;
+    v->dim = g_model.night;
+    v->labels = 1;
+    if (g_page == PAGE_MAP) {
+        mapview_centre(&g_view, &g_model, &v->mx, &v->my);
+        v->zoom = g_view.zoom;
+        v->bearing = mapview_bearing(&g_view, &g_model);
+        v->cx = SCREEN_W / 2;
+        v->cy = SCREEN_H / 2;
+    } else {
+        v->mx = g_model.map_mx;
+        v->my = g_model.map_my;
+        v->zoom = g_model.map_zoom;
+        v->bearing = g_model.map_bearing;
+        v->cx = CAR_X;
+        v->cy = CAR_Y;
+    }
+}
+
+static void map_work_start(void)
+{
+    SetTimer(g_main, TIMER_MAPWORK, 1, NULL);
+}
+
+/* One missing picture, nearest the screen first: those on it (then a frame shows it), a ring
+ * around it, the next zoom in and out, and the other look (day or night) for the switch. */
+static void map_work(void)
+{
+    VMapView v, other;
+    if (!g_map_ok || (g_page != PAGE_DASHBOARD && g_page != PAGE_MAP) || !g_model.have_position ||
+        !IsWindowVisible(g_main)) {
+        KillTimer(g_main, TIMER_MAPWORK);
+        return;
+    }
+    map_view_now(&v);
+    other = v;
+    other.style = !v.style;
+    other.dim = !v.dim;
+    if (vt_fill(&g_tiles, &v, SCREEN_W, SCREEN_H, 0, 0.0)) {
+        if (!g_glide)
+            InvalidateRect(g_main, NULL, FALSE);
+        return;
+    }
+    if (vt_fill(&g_tiles, &v, SCREEN_W, SCREEN_H, 2, 0.0) || vt_fill(&g_tiles, &v, SCREEN_W, SCREEN_H, 0, MAP_ZOOM_STEP) ||
+        vt_fill(&g_tiles, &v, SCREEN_W, SCREEN_H, 0, -MAP_ZOOM_STEP) || vt_fill(&g_tiles, &other, SCREEN_W, SCREEN_H, 0, 0.0))
+        return;
+    KillTimer(g_main, TIMER_MAPWORK);
 }
 
 /* ---------------------------------------------------------------- address (read-only) */
@@ -909,7 +1103,7 @@ static void address_open(void)
     int bad = 0, hidden = 0;
     DWORD error = 0;
 
-    sd_map_folder(folder);
+    sd_folder(folder, L"Map");
     _snwprintf(path, MAX_PATH, L"%s*.addr", folder);
     path[MAX_PATH - 1] = 0;
     find = FindFirstFileW(path, &found);
@@ -1017,28 +1211,18 @@ static void address_to_model(void)
     LeaveCriticalSection(&g_addr_lock);
 }
 
-/* One zoom level in or out, skipping levels the map files do not have. */
-static void map_step(int direction)
-{
-    int z = g_model.map_zoom + direction;
-    while (z >= g_map.min_zoom && z <= g_map.max_zoom && !map_has_zoom(&g_map, z))
-        z += direction;
-    if (z >= g_map.min_zoom && z <= g_map.max_zoom)
-        g_model.map_zoom = z;
-    g_zoom_touched = 1;
-}
-
-/* The back buffer: an 800 x 480 RGB565 DIB section when CreateDIBSection is there (looked up at
- * run time, like the other optional GDI functions), so the map can be composed and the panels
- * tinted straight into its pixels while GDI draws the text and shapes on the same bitmap.
- * Otherwise an ordinary bitmap: no map picture, and solid panels. */
+/* The back buffer: an 800 x 480 32-bit DIB section (0x00RRGGBB, top row first) when
+ * CreateDIBSection is there (looked up at run time, like the other optional GDI functions): the
+ * screen has 32 bits per pixel, so copying it to the screen needs no conversion (about 9 ms against
+ * 40 for a 16-bit one, measured with VMapTest). The map is drawn and the panels tinted straight
+ * into its pixels, and GDI draws the text and shapes on the same bitmap. Otherwise an ordinary
+ * bitmap: no map, and solid panels. */
 typedef HBITMAP (WINAPI *dib_section_fn)(HDC, const BITMAPINFO *, UINT, void **, HANDLE, DWORD);
-static unsigned short *g_back_bits; /* bottom-up: the top row is the last one in memory */
-static int g_back_stride;           /* pixels per row */
+static unsigned *g_back_bits;
 
 static void create_back_buffer(HDC screen)
 {
-    struct { BITMAPINFOHEADER h; DWORD masks[3]; } info;
+    BITMAPINFOHEADER info;
     HMODULE core = GetModuleHandleW(L"coredll.dll");
     dib_section_fn create = core ? (dib_section_fn)GetProcAddressW(core, L"CreateDIBSection") : NULL;
     void *bits = NULL;
@@ -1046,81 +1230,435 @@ static void create_back_buffer(HDC screen)
     g_back = CreateCompatibleDC(screen);
     if (create) {
         memset(&info, 0, sizeof info);
-        info.h.biSize = sizeof info.h;
-        info.h.biWidth = SCREEN_W;
-        info.h.biHeight = SCREEN_H; /* bottom-up, which every Windows CE version supports */
-        info.h.biPlanes = 1;
-        info.h.biBitCount = 16;
-        info.h.biCompression = BI_BITFIELDS;
-        info.masks[0] = 0xF800; /* RGB565 */
-        info.masks[1] = 0x07E0;
-        info.masks[2] = 0x001F;
+        info.biSize = sizeof info;
+        info.biWidth = SCREEN_W;
+        info.biHeight = -SCREEN_H; /* top-down */
+        info.biPlanes = 1;
+        info.biBitCount = 32;
+        info.biCompression = BI_RGB;
         g_back_bitmap = create(g_back, (const BITMAPINFO *)&info, DIB_RGB_COLORS, &bits, NULL, 0);
         if (g_back_bitmap == NULL || bits == NULL) {
-            log_line("[screen] cannot create the 16-bit back buffer (error %lu): no map picture, solid panels",
-                     GetLastError());
+            log_line("[screen] cannot create the 32-bit back buffer (error %lu): no map, solid panels", GetLastError());
             if (g_back_bitmap)
                 DeleteObject(g_back_bitmap);
             g_back_bitmap = NULL;
             bits = NULL;
         }
     } else {
-        log_line("[screen] CreateDIBSection missing: no map picture, solid panels");
+        log_line("[screen] CreateDIBSection missing: no map, solid panels");
     }
     if (g_back_bitmap == NULL)
         g_back_bitmap = CreateCompatibleBitmap(screen, SCREEN_W, SCREEN_H);
     SelectObject(g_back, g_back_bitmap);
-    g_back_bits = (unsigned short *)bits;
-    g_back_stride = ((SCREEN_W * 2 + 3) & ~3) / 2; /* rows are padded to 4 bytes */
+    g_back_bits = (unsigned *)bits;
 }
 
 /* Row y (0 = top) of the back buffer. */
-static unsigned short *back_row(int y)
+static unsigned *back_row(int y)
 {
-    return g_back_bits + (long)(SCREEN_H - 1 - y) * g_back_stride;
+    return g_back_bits + (long)y * SCREEN_W;
 }
 
-static int gdi_map(void *ctx, int x, int y, int w, int h, int zoom, double px, double py, int night)
+static int same_view(const VMapView *a, const VMapView *b)
 {
+    double scale = 256.0 * vmap_exp2(a->zoom), dx = (a->mx - b->mx) * scale, dy = (a->my - b->my) * scale;
+    double db = a->bearing - b->bearing;
+    return a->zoom == b->zoom && a->style == b->style && a->dim == b->dim && a->cx == b->cx && a->cy == b->cy &&
+           dx < 0.4 && dx > -0.4 && dy < 0.4 && dy > -0.4 && db < 0.3 && db > -0.3;
+}
+
+/* The map into the back buffer. While it moves (the glide, or a finger dragging the map page): a
+ * frame from the map pictures, smooth, with the labels moved from their last placement. At rest:
+ * drawn in full once (sharp, labels placed afresh) and kept, then reused while the view stays. */
+static int gdi_map(void *ctx, int x, int y, int w, int h, double mx, double my, double zoom, double bearing, int cx,
+                   int cy, int night)
+{
+    VSurface s;
+    VMapView v;
     DWORD start = GetTickCount(), took;
-    int result;
-    if (!g_map_ok || g_map.count == 0)
-        return MAP_NO_FILES;
-    if (g_back_bits == NULL || x < 0 || y < 0 || w <= 0 || h <= 0 || x + w > SCREEN_W || y + h > SCREEN_H) {
-        gdi_fill_rect(ctx, x, y, w, h, MAP_OUTSIDE_RGB);
-        return MAP_OUTSIDE;
+    int moving = g_glide || (g_page == PAGE_MAP && g_view.dragging);
+    if (!g_map_ok)
+        return MAPDRAW_NO_FILES;
+    if (g_back_bits == NULL || x != 0 || y != 0 || w != SCREEN_W || h != SCREEN_H) {
+        gdi_fill_rect(ctx, x, y, w, h, g_vmap.land[night ? 0 : 1]);
+        return MAPDRAW_OUTSIDE;
     }
-    result = map_compose(&g_map, back_row(y) + x, w, h, -g_back_stride, zoom, px, py, night);
-    took = GetTickCount() - start;
-    if (took > g_map_slowest_ms)
-        g_map_slowest_ms = took;
-    return result;
+    memset(&s, 0, sizeof s);
+    s.px32 = g_back_bits;
+    s.w = SCREEN_W;
+    s.h = SCREEN_H;
+    s.stride = SCREEN_W;
+    memset(&v, 0, sizeof v);
+    v.mx = mx;
+    v.my = my;
+    v.zoom = zoom;
+    v.bearing = bearing;
+    v.style = night ? 0 : 1; /* the dark map at half brightness at night, the light one by day */
+    v.dim = night;
+    v.cx = cx;
+    v.cy = cy;
+    v.labels = 1;
+    if (moving) {
+        vt_compose(&g_tiles, &s, &v, 1);
+        vmap_draw(&g_vmap, &s, &v, VM_DRAW_LABELS_KEPT, NULL);
+        g_rest_ok = 0;
+        took = GetTickCount() - start;
+        g_moving_frames++;
+        g_moving_sum_ms += took;
+        if (took > g_moving_slowest_ms)
+            g_moving_slowest_ms = took;
+    } else if (g_rest_ok && g_rest && same_view(&v, &g_rest_view)) {
+        memcpy(g_back_bits, g_rest, SCREEN_W * SCREEN_H * sizeof(unsigned));
+    } else {
+        vmap_render(&g_vmap, &s, &v, NULL);
+        if (g_rest) {
+            memcpy(g_rest, g_back_bits, SCREEN_W * SCREEN_H * sizeof(unsigned));
+            g_rest_view = v;
+            g_rest_ok = 1;
+        }
+        took = GetTickCount() - start;
+        g_sharp_count++;
+        g_sharp_sum_ms += took;
+        if (took > g_sharp_slowest_ms)
+            g_sharp_slowest_ms = took;
+    }
+    if (g_tiles.missing > 0 || moving)
+        map_work_start(); /* pictures for the frames to come */
+    return mx >= g_map_box.left && mx <= g_map_box.right && my >= g_map_box.top && my <= g_map_box.bottom
+               ? MAPDRAW_SHOWN
+               : MAPDRAW_OUTSIDE;
 }
 
 /* Semi-transparent panel, mixed into the back buffer's pixels (GDI on Windows CE draws at once,
  * so the pixels are up to date). */
 static void gdi_glass(void *ctx, int x, int y, int w, int h, int radius, unsigned rgb, int alpha)
 {
-    map_tint(back_row(0), SCREEN_W, SCREEN_H, -g_back_stride, x, y, w, h, radius, rgb, alpha);
+    VSurface s;
+    memset(&s, 0, sizeof s);
+    s.px32 = g_back_bits;
+    s.w = SCREEN_W;
+    s.h = SCREEN_H;
+    s.stride = SCREEN_W;
+    vr_tint(&s, x, y, w, h, radius, rgb, alpha);
+}
+
+static void make_canvas(Canvas *c)
+{
+    c->ctx = g_back;
+    c->fill_rect = gdi_fill_rect;
+    c->round_rect = gdi_round_rect;
+    c->polyline = gdi_polyline;
+    c->polygon = gdi_polygon;
+    c->circle = gdi_circle;
+    c->text_width = gdi_text_width;
+    c->text = gdi_text;
+    c->map = gdi_map;
+    c->glass = g_back_bits ? gdi_glass : NULL;
+}
+
+/* ---------------------------------------------------------------- holidays (read-only) */
+
+/* holidays.txt next to the exe (tools/holidays/build_holidays.py): national holidays by the date,
+ * local ones by the town nearest the GPS position, worked out from the list's own town centres
+ * (holiday.c), never from the map or the address file. The log gets the national holidays; the
+ * town and the local holidays found are never logged (as revealing as the position). */
+#define HOLIDAY_FILE_MAX (128 * 1024)
+#define TOWN_MOVED_E5 100           /* the town is looked up again after about 110 m ... */
+#define TOWN_EVERY_MS 10000u        /* ... at most this often */
+#define SHOWN_MAX 8
+static HolidayList g_holidays;
+static char g_holiday_text[HOLIDAY_FILE_MAX + 1];
+static int g_holidays_ok;
+static int g_town = -1, g_town_known, g_town_lat, g_town_lon; /* never logged */
+static DWORD g_town_ms;
+static long g_holiday_day = -1;     /* the day g_shown is for */
+static char g_shown_name[SHOWN_MAX][HOLIDAY_NAME_MAX], g_shown_place[SHOWN_MAX][HOLIDAY_NAME_MAX];
+static int g_shown_count;           /* holidays the notification has shown today */
+
+static void holidays_open(void)
+{
+    WCHAR path[MAX_PATH];
+    HANDLE h;
+    DWORD got = 0;
+    int y1, m1, d1, y2, m2, d2;
+
+    _snwprintf(path, MAX_PATH, L"%sholidays.txt", g_dir);
+    path[MAX_PATH - 1] = 0;
+    h = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) {
+        log_line("[holidays] no holidays.txt next to the program: no holidays shown");
+        return;
+    }
+    if (!ReadFile(h, g_holiday_text, HOLIDAY_FILE_MAX, &got, NULL))
+        got = 0;
+    CloseHandle(h);
+    if (got >= HOLIDAY_FILE_MAX)
+        log_line("[holidays] holidays.txt is larger than %d KB: its end is left out", HOLIDAY_FILE_MAX / 1024);
+    g_holiday_text[got] = 0;
+    holiday_parse(&g_holidays, g_holiday_text, (int)got);
+    g_holidays_ok = g_holidays.count > 0 && g_holidays.first_day <= g_holidays.last_day;
+    sun_civil_from_days(g_holidays.first_day, &y1, &m1, &d1);
+    sun_civil_from_days(g_holidays.last_day, &y2, &m2, &d2);
+    log_line("[holidays] %d holidays, %d provinces, %d towns, for %04d-%02d-%02d to %04d-%02d-%02d (%d lines unreadable)",
+             g_holidays.count, g_holidays.province_count, g_holidays.town_count, y1, m1, d1, y2, m2, d2,
+             g_holidays.bad_lines);
+}
+
+static int same_text(const char *a, const char *b)
+{
+    while (*a && *a == *b)
+        a++, b++;
+    return *a == *b;
+}
+
+/* ---------------------------------------------------------------- holiday notification */
+
+/* The notification moves (island.c) while the dashboard page is in front: then a 15 ms timer asks
+ * for frames, and each frame redraws only the island's box. The screen under that box is copied
+ * after every full repaint (g_under), so a frame puts back the part the last frame covered and
+ * draws the new one there, and only that part goes to the screen; a full repaint (map, panels,
+ * 800 x 480 copy) is far too slow for a smooth movement on this unit. The 1 s repaint and the map's
+ * glide frames wait while it moves (a move lasts half a second). Without the 32-bit back buffer
+ * every frame is a full
+ * repaint. */
+#define ISLAND_FRAME_MS 15
+static Island g_island;
+static int g_island_timer;          /* TIMER_ISLAND runs */
+static int g_island_waiting;        /* a holiday not shown yet waits for the dashboard to be in front */
+static unsigned g_under[ISLAND_AREA_W * ISLAND_AREA_H];
+static int g_under_ok;
+static int g_island_partial;        /* the next WM_PAINT is for the island alone */
+static int g_tick_waiting;          /* the 1 s repaint waits until the island stops */
+static unsigned g_island_frames;    /* frames that redrew the island alone, and the slowest (log) */
+static DWORD g_island_slowest_ms;
+static RECT g_island_drawn;         /* where the last frame was drawn (empty: nowhere) */
+
+static int island_in_front(void)
+{
+    return g_page == PAGE_DASHBOARD && !g_menu && IsWindowVisible(g_main);
+}
+
+/* Starts the frame timer when the island moves. */
+static void island_kick(void)
+{
+    if (island_step(&g_island, GetTickCount()) && !g_island_timer) {
+        SetTimer(g_main, TIMER_ISLAND, ISLAND_FRAME_MS, NULL);
+        g_island_timer = 1;
+    }
+}
+
+/* The page was left, the menu opened or the window hidden: an open notification becomes the
+ * button at once. */
+static void island_leave(void)
+{
+    island_snap(&g_island);
+    g_under_ok = 0;
+}
+
+static void island_announce(void)
+{
+    if (island_in_front()) {
+        island_open(&g_island, GetTickCount());
+        g_island_waiting = 0;
+        island_kick();
+    } else {
+        g_island_waiting = 1;
+    }
+}
+
+static void island_set_drawn(const IslandFrame *f)
+{
+    int x, y, w, h;
+    island_bounds(f, &x, &y, &w, &h);
+    if (f->w < 1 || f->h < 1)
+        w = h = 0;
+    g_island_drawn.left = x;
+    g_island_drawn.top = y;
+    g_island_drawn.right = x + w;
+    g_island_drawn.bottom = y + h;
+}
+
+/* The dashboard under the island's area, from the back buffer (before the island is drawn). */
+static void island_save_under(void)
+{
+    int x, y;
+    if (g_back_bits == NULL)
+        return;
+    for (y = 0; y < ISLAND_AREA_H; y++) {
+        const unsigned *src = back_row(ISLAND_AREA_Y + y) + ISLAND_AREA_X;
+        unsigned *dst = g_under + y * ISLAND_AREA_W;
+        for (x = 0; x < ISLAND_AREA_W; x++)
+            dst[x] = src[x];
+    }
+    g_under_ok = 1;
+}
+
+/* Asks for a frame: only the part the last frame and this one cover, or the whole screen when
+ * there is no copy of what lies under the island. */
+static void island_invalidate(void)
+{
+    IslandFrame f;
+    RECT r;
+    int x, y, w, h;
+    if (!g_under_ok || g_back_bits == NULL) {
+        InvalidateRect(g_main, NULL, FALSE);
+        return;
+    }
+    island_frame(&g_island, GetTickCount(), &f);
+    island_bounds(&f, &x, &y, &w, &h);
+    r.left = x;
+    r.top = y;
+    r.right = x + w;
+    r.bottom = y + h;
+    if (g_island_drawn.right > g_island_drawn.left) {
+        if (g_island_drawn.left < r.left) r.left = g_island_drawn.left;
+        if (g_island_drawn.top < r.top) r.top = g_island_drawn.top;
+        if (g_island_drawn.right > r.right) r.right = g_island_drawn.right;
+        if (g_island_drawn.bottom > r.bottom) r.bottom = g_island_drawn.bottom;
+    }
+    if (r.left < ISLAND_AREA_X) r.left = ISLAND_AREA_X;
+    if (r.top < ISLAND_AREA_Y) r.top = ISLAND_AREA_Y;
+    if (r.right > ISLAND_AREA_X + ISLAND_AREA_W) r.right = ISLAND_AREA_X + ISLAND_AREA_W;
+    if (r.bottom > ISLAND_AREA_Y + ISLAND_AREA_H) r.bottom = ISLAND_AREA_Y + ISLAND_AREA_H;
+    if (r.right <= r.left || r.bottom <= r.top)
+        return;
+    g_island_partial = 1;
+    InvalidateRect(g_main, &r, FALSE);
+}
+
+static void island_timer(void)
+{
+    if (island_step(&g_island, GetTickCount())) {
+        if (island_in_front())
+            island_invalidate();
+        return;
+    }
+    KillTimer(g_main, TIMER_ISLAND);
+    g_island_timer = 0;
+    if (island_in_front())
+        island_invalidate(); /* the last frame, where the move ends */
+    if (g_tick_waiting) {
+        g_tick_waiting = 0;
+        InvalidateRect(g_main, NULL, FALSE);
+    }
+}
+
+/* 1 when a WM_PAINT for rc can be served by redrawing the island alone. */
+static int island_partial_ok(const RECT *rc)
+{
+    return g_island_partial && g_under_ok && g_back_bits != NULL && island_in_front() && rc->left >= ISLAND_AREA_X &&
+           rc->top >= ISLAND_AREA_Y && rc->right <= ISLAND_AREA_X + ISLAND_AREA_W &&
+           rc->bottom <= ISLAND_AREA_Y + ISLAND_AREA_H && rc->right > rc->left && rc->bottom > rc->top;
+}
+
+/* A frame of the island: the dashboard under rc put back from the copy, the island drawn, rc copied
+ * to the screen. */
+static void paint_island(HDC target, const RECT *rc)
+{
+    Canvas c;
+    IslandFrame f;
+    int x, y;
+    for (y = rc->top; y < rc->bottom; y++) {
+        const unsigned *src = g_under + (y - ISLAND_AREA_Y) * ISLAND_AREA_W + (rc->left - ISLAND_AREA_X);
+        unsigned *dst = back_row(y) + rc->left;
+        for (x = 0; x < rc->right - rc->left; x++)
+            dst[x] = src[x];
+    }
+    make_canvas(&c);
+    island_frame(&g_island, GetTickCount(), &f);
+    render_island(&c, &g_model, &f);
+    island_set_drawn(&f);
+    BitBlt(target, rc->left, rc->top, rc->right - rc->left, rc->bottom - rc->top, g_back, rc->left, rc->top, SRCCOPY);
+}
+
+/* Today's holidays into the model (once a second): national ones by the date, local ones for the
+ * town the car is in. The notification opens for a holiday it has not shown yet today. */
+static void holidays_update(void)
+{
+    HolidayRow rows[HOLIDAY_ROWS];
+    DWORD now = GetTickCount();
+    long day;
+    int n = 0, i, j, fresh = 0, covered;
+
+    if (!g_holidays_ok || !g_model.clock_valid)
+        return;
+    covered = holiday_covers(&g_holidays, g_model.year, g_model.month, g_model.day);
+    day = sun_days_from_civil(g_model.year, g_model.month, g_model.day);
+    if (day != g_holiday_day) { /* a new day: the national holidays go to the log, never local ones */
+        g_holiday_day = day;
+        g_shown_count = 0;
+        if (!covered) {
+            log_line("[holidays] %04d-%02d-%02d is outside the holiday list's dates: no holidays shown", g_model.year,
+                     g_model.month, g_model.day);
+        } else {
+            n = holiday_today(&g_holidays, g_model.year, g_model.month, g_model.day, -1, rows, HOLIDAY_ROWS);
+            if (n == 0)
+                log_line("[holidays] %04d-%02d-%02d: no national holiday", g_model.year, g_model.month, g_model.day);
+            for (i = 0; i < n; i++)
+                log_line("[holidays] %04d-%02d-%02d: %s (%s)", g_model.year, g_model.month, g_model.day, rows[i].name,
+                         rows[i].kind == HOLIDAY_REGULAR ? "regular holiday"
+                         : rows[i].kind == HOLIDAY_SPECIAL ? "special non-working day" : "special working day");
+        }
+    }
+    n = 0;
+    if (covered) {
+        if (g_model.have_position) {
+            double la = g_model.lat * 1e5, lo = g_model.lon * 1e5;
+            int lat = (int)(la < 0 ? la - 0.5 : la + 0.5), lon = (int)(lo < 0 ? lo - 0.5 : lo + 0.5);
+            int dlat = lat > g_town_lat ? lat - g_town_lat : g_town_lat - lat;
+            int dlon = lon > g_town_lon ? lon - g_town_lon : g_town_lon - lon;
+            if (!g_town_known || ((dlat > TOWN_MOVED_E5 || dlon > TOWN_MOVED_E5) && now - g_town_ms >= TOWN_EVERY_MS)) {
+                g_town = holiday_locate(&g_holidays, lat, lon);
+                g_town_known = 1;
+                g_town_lat = lat;
+                g_town_lon = lon;
+                g_town_ms = now;
+            }
+        }
+        n = holiday_today(&g_holidays, g_model.year, g_model.month, g_model.day, g_town_known ? g_town : -1, rows,
+                          HOLIDAY_ROWS);
+    }
+    for (i = 0; i < n; i++) {
+        for (j = 0; j < g_shown_count; j++)
+            if (same_text(g_shown_name[j], rows[i].name) && same_text(g_shown_place[j], rows[i].place))
+                break;
+        if (j < g_shown_count)
+            continue;
+        fresh = 1;
+        if (g_shown_count < SHOWN_MAX) {
+            copy_text(g_shown_name[g_shown_count], rows[i].name, HOLIDAY_NAME_MAX);
+            copy_text(g_shown_place[g_shown_count], rows[i].place, HOLIDAY_NAME_MAX);
+            g_shown_count++;
+        }
+    }
+    for (i = 0; i < n; i++)
+        g_model.holidays[i] = rows[i];
+    g_model.holiday_count = n;
+    island_set_rows(&g_island, n, now);
+    if (n == 0)
+        g_island_waiting = 0;
+    else if (fresh || (g_island_waiting && island_in_front()))
+        island_announce();
+    island_kick();
 }
 
 static void paint(HDC target)
 {
     Canvas c;
-    c.ctx = g_back;
-    c.fill_rect = gdi_fill_rect;
-    c.round_rect = gdi_round_rect;
-    c.polyline = gdi_polyline;
-    c.polygon = gdi_polygon;
-    c.circle = gdi_circle;
-    c.text_width = gdi_text_width;
-    c.text = gdi_text;
-    c.map = gdi_map;
-    c.glass = g_back_bits ? gdi_glass : NULL;
-    if (g_carinfo) {
+    make_canvas(&c);
+    if (g_page == PAGE_CARINFO) {
         render_carinfo(&c, &g_model, g_carinfo_cat);
+        g_under_ok = 0;
+    } else if (g_page == PAGE_MAP) {
+        render_mappage(&c, &g_model, &g_view);
+        g_under_ok = 0;
     } else {
+        IslandFrame f;
         render_dashboard(&c, &g_model);
+        island_save_under();
+        island_frame(&g_island, GetTickCount(), &f);
+        render_island(&c, &g_model, &f);
+        island_set_drawn(&f);
         if (g_menu)
             render_menu(&c, &g_model, g_has_files, DASH_VERSION);
     }
@@ -1167,8 +1705,9 @@ static void tick(void)
         last_night = g_model.night;
         last_src = g_model.night_src;
     }
-    map_follow_colours();
+    glide_to_model();
     address_to_model();
+    holidays_update();
     if (g_model.clock_src == SRC_GPS) { /* once: what the GPS clock gave against the unit's clock */
         static int logged;
         if (!logged++)
@@ -1190,12 +1729,105 @@ static void log_stats(void)
              g_bus.active ? "on" : "off", g_bus.records, g_bus.replies, g_bus.tx, g_bus.tx_failed, g_bus.ring.resyncs,
              g_model.elev_src == SRC_GPS ? "GPS" : g_model.elev_src == SRC_CAR ? "car" : "none",
              g_model.heading_src == SRC_GPS ? "GPS" : g_model.heading_src == SRC_CAR ? "car" : "none");
-    if (g_map.count > 0)
-        log_line("[map] zoom %d, %u tiles decoded, %u failed, %u read errors, slowest map draw %lu ms",
-                 g_model.map_zoom, g_map.decoded, g_map.failed, g_map.read_errors, g_map_slowest_ms);
+    if (g_map_ok)
+        log_line("[map] zoom %.1f | moving: %u frames, map %u ms on average, slowest %lu ms; at rest: %u sharp drawings, "
+                 "%u ms on average, slowest %lu ms | %d pictures drawn, %u ms each on average, %d kept | map page "
+                 "opened %u times, slowest frame while dragging %lu ms", g_model.map_zoom, g_moving_frames,
+                 g_moving_frames ? g_moving_sum_ms / g_moving_frames : 0, g_moving_slowest_ms, g_sharp_count,
+                 g_sharp_count ? g_sharp_sum_ms / g_sharp_count : 0, g_sharp_slowest_ms, g_tiles.drawn,
+                 g_tiles.drawn ? g_tiles.us_drawing / g_tiles.drawn / 1000 : 0, g_tiles.allocated, g_page_opened,
+                 g_drag_slowest_all_ms);
+    if (g_holidays_ok) /* counts only: never the town */
+        log_line("[holidays] notification: %u frames drawn alone, slowest %lu ms", g_island_frames, g_island_slowest_ms);
     if (g_addr_ok) /* counts only: never the address */
         log_line("[address] %u lookups, %u read errors, %u outlines skipped, slowest lookup %lu ms", g_addr.lookups,
                  g_addr.read_errors, g_addr.skipped, g_addr_slowest_ms);
+}
+
+/* ---------------------------------------------------------------- map page */
+
+/* Opened by tapping the car on the dashboard's map, at the dashboard's zoom, following the car.
+ * The log gets the zoom and, when it closes, how dragging went: never a position. */
+static void map_page_open(void)
+{
+    g_page = PAGE_MAP;
+    mapview_open(&g_view, g_model.map_zoom, GetTickCount());
+    g_page_opened++;
+    g_drag_frames = 0;
+    g_drag_slowest_ms = 0;
+    g_rest_ok = 0;
+    log_line("[page] map, zoom %.1f", g_view.zoom);
+}
+
+static void map_page_close(void)
+{
+    g_page = PAGE_DASHBOARD;
+    g_rest_ok = 0;
+    log_line("[page] dashboard (map page: %u frames while dragging, slowest %lu ms)", g_drag_frames, g_drag_slowest_ms);
+}
+
+/* A finger down on the map page: a button, or the start of a drag. Returns 1 when the page needs
+ * drawing again. */
+static int map_page_press(int x, int y)
+{
+    DWORD now = GetTickCount();
+    int hit = render_mappage_hit(x, y, &g_view);
+    double z;
+
+    switch (hit) {
+    case MAPPAGE_BACK:
+        map_page_close();
+        return 1;
+    case MAPPAGE_ZOOM_IN:
+    case MAPPAGE_ZOOM_OUT:
+        z = zoom_step(g_view.zoom, hit == MAPPAGE_ZOOM_IN ? 1 : -1);
+        if (z == g_view.zoom)
+            return 0;
+        mapview_set_zoom(&g_view, z, now);
+        return 1;
+    case MAPPAGE_CENTRE:
+        mapview_follow(&g_view);
+        return 1;
+    }
+    mapview_press(&g_view, &g_model, x, y, now);
+    return 0;
+}
+
+/* The finger moved on the map page (x, y); returns 1 when the map moved. */
+static int map_page_move(int x, int y)
+{
+    if (!g_view.pressed)
+        return 0;
+    return mapview_move(&g_view, x, y, g_map_ok ? &g_map_box : NULL, GetTickCount());
+}
+
+/* A frame of the glide (TIMER_ANIM): the model's map view moves on; the screen is drawn again
+ * where the map shows (the dashboard, or the map page while it follows the car). Frames come at
+ * most every ANIM_MS, and further apart when they take long, so the unit keeps time for the rest;
+ * they wait while the holiday notification moves. */
+static void glide_frame(void)
+{
+    DWORD now = GetTickCount();
+    glide_now(now);
+    if (!g_glide) {
+        KillTimer(g_main, TIMER_ANIM);
+        g_anim_timer = 0;
+    }
+    if (g_island_timer && island_in_front())
+        return;
+    if (IsWindowVisible(g_main) && !g_menu && (g_page == PAGE_DASHBOARD || (g_page == PAGE_MAP && g_view.follow)))
+        InvalidateRect(g_main, NULL, FALSE); /* the last one, at rest, is drawn sharp */
+}
+
+/* After a frame of the glide: frames further apart when they take long (a third of the time left
+ * for the rest of the unit). */
+static void glide_pace(DWORD took)
+{
+    DWORD want = took * 3 / 2 > ANIM_MS ? took * 3 / 2 : ANIM_MS;
+    if (!g_anim_timer || (want < g_anim_ms + 15 && want + 15 > g_anim_ms))
+        return;
+    g_anim_ms = want;
+    SetTimer(g_main, TIMER_ANIM, g_anim_ms, NULL);
 }
 
 /* ---------------------------------------------------------------- window */
@@ -1219,9 +1851,17 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpa
         switch (wparam) {
         case TIMER_TICK:
             tick();
-            if (IsWindowVisible(hwnd))
+            if (g_page == PAGE_MAP)
+                mapview_idle(&g_view, GetTickCount()); /* follows the car again after 30 s untouched */
+            island_kick(); /* an open notification closes by itself after a while */
+            if (g_island_timer && island_in_front())
+                g_tick_waiting = 1; /* repaint once the notification stops moving */
+            else if (IsWindowVisible(hwnd))
                 InvalidateRect(hwnd, NULL, FALSE);
             break;
+        case TIMER_ISLAND: island_timer(); break;
+        case TIMER_ANIM: glide_frame(); break;
+        case TIMER_MAPWORK: map_work(); break;
         case TIMER_RING: bus_poll(); break;
         case TIMER_FIRST:
             KillTimer(hwnd, TIMER_FIRST);
@@ -1236,6 +1876,7 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpa
         case TIMER_HOLD:
             KillTimer(hwnd, TIMER_HOLD);
             g_menu = 1;
+            island_leave();
             InvalidateRect(hwnd, NULL, FALSE);
             break;
         case TIMER_STATS: log_stats(); break;
@@ -1264,10 +1905,13 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpa
             }
             }
             InvalidateRect(hwnd, NULL, FALSE);
-        } else if (g_carinfo) {
+        } else if (g_page == PAGE_MAP) {
+            if (map_page_press(x, y))
+                InvalidateRect(hwnd, NULL, FALSE);
+        } else if (g_page == PAGE_CARINFO) {
             int cat = render_carinfo_category_hit(x, y);
             if (render_carinfo_back_hit(x, y)) {
-                g_carinfo = 0;
+                g_page = PAGE_DASHBOARD;
                 log_line("[page] dashboard");
                 InvalidateRect(hwnd, NULL, FALSE);
             } else if (cat >= 0 && cat != g_carinfo_cat) {
@@ -1275,32 +1919,82 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpa
                 log_line("[page] car info, category %d", cat);
                 InvalidateRect(hwnd, NULL, FALSE);
             }
+        } else if (island_hit(&g_island, GetTickCount(), x, y) != ISLAND_HIT_NONE) {
+            if (island_hit(&g_island, GetTickCount(), x, y) == ISLAND_HIT_DOT)
+                island_open(&g_island, GetTickCount()); /* the button: the notification again */
+            else
+                island_close(&g_island, GetTickCount());
+            island_kick();
         } else if (render_carinfo_button_hit(x, y)) {
-            g_carinfo = 1;
+            g_page = PAGE_CARINFO;
+            island_leave();
             log_line("[page] car info");
             InvalidateRect(hwnd, NULL, FALSE);
-        } else if (render_map_hit(x, y) != MAPHIT_NONE && g_map.count > 0 && g_model.have_position) {
-            map_step(render_map_hit(x, y) == MAPHIT_ZOOM_IN ? 1 : -1);
+        } else if (render_map_hit(x, y) != MAPHIT_NONE && g_map_ok && g_model.have_position) {
+            double z = zoom_step(g_model.map_zoom, render_map_hit(x, y) == MAPHIT_ZOOM_IN ? 1 : -1);
+            if (z != g_model.map_zoom) {
+                g_model.map_zoom = z;
+                save_settings(); /* remembered: the dashboard starts at this zoom next time */
+                log_line("[map] zoom %.1f", z);
+            }
+            InvalidateRect(hwnd, NULL, FALSE);
+        } else if (render_car_hit(x, y) && g_map_ok && g_back_bits != NULL && g_model.have_position) {
+            map_page_open(); /* the car on the map: only where the map picture is drawn */
+            island_leave();
             InvalidateRect(hwnd, NULL, FALSE);
         } else if (render_clock_hit(x, y)) {
             SetTimer(hwnd, TIMER_HOLD, 2000, NULL);
         }
         return 0;
     }
+    case WM_MOUSEMOVE: /* Windows CE sends it only while the finger is down */
+        if (g_page == PAGE_MAP && map_page_move((short)LOWORD(lparam), (short)HIWORD(lparam)))
+            InvalidateRect(hwnd, NULL, FALSE);
+        return 0;
     case WM_LBUTTONUP:
         KillTimer(hwnd, TIMER_HOLD);
+        if (g_page == PAGE_MAP && g_view.pressed) {
+            map_page_move((short)LOWORD(lparam), (short)HIWORD(lparam));
+            mapview_release(&g_view, GetTickCount());
+            InvalidateRect(hwnd, NULL, FALSE); /* at rest: drawn sharp */
+        }
         return 0;
     case WM_SHOWWINDOW:
         if (wparam)
             InvalidateRect(hwnd, NULL, FALSE);
+        else
+            island_leave();
+        if (!wparam && g_view.pressed) /* hidden with the finger down: no WM_LBUTTONUP will come */
+            mapview_release(&g_view, GetTickCount());
         break;
     case WM_ERASEBKGND:
         return 1; /* paint() covers everything */
     case WM_PAINT: {
         PAINTSTRUCT ps;
+        DWORD start = GetTickCount(), took;
+        int dragging = g_page == PAGE_MAP && g_view.dragging, gliding = g_glide;
         HDC dc = BeginPaint(hwnd, &ps);
-        paint(dc);
+        if (island_partial_ok(&ps.rcPaint)) {
+            paint_island(dc, &ps.rcPaint);
+            took = GetTickCount() - start;
+            g_island_frames++;
+            if (took > g_island_slowest_ms)
+                g_island_slowest_ms = took;
+        } else {
+            paint(dc);
+        }
+        g_island_partial = 0;
         EndPaint(hwnd, &ps);
+        took = GetTickCount() - start;
+        if (dragging) {
+            g_drag_frames++;
+            if (took > g_drag_slowest_ms)
+                g_drag_slowest_ms = took;
+            if (took > g_drag_slowest_all_ms)
+                g_drag_slowest_all_ms = took;
+        }
+        if (gliding)
+            glide_pace(took);
         return 0;
     }
     case MSG_SYSINFO:
@@ -1354,6 +2048,8 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous, LPWSTR command_line, 
     dash_init(&g_model);
     map_open();
     address_open();
+    holidays_open();
+    island_init(&g_island);
 
     memset(&wc, 0, sizeof wc);
     wc.lpfnWndProc = main_proc;

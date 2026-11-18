@@ -1,6 +1,6 @@
 # Vehicle data on the head unit: research notes
 
-Status (last updated 2026-11-14): static analysis of the files in `Bin/`, `Infor/` and `dumps/`, plus
+Status (last updated 2026-11-17): static analysis of the files in `Bin/`, `Infor/` and `dumps/`, plus
 three probe runs on the car ("Probe run 1" to "Probe run 3" below). Each finding is marked:
 
 - **Decoded**: read directly from the program code. Byte layouts, ids and scaling are exact.
@@ -22,11 +22,13 @@ is the 6982E variant. The factory Car Info screen is `Infor/CarInfo.exe` version
 | Outside temperature | Yes | CarInfo `0x31`, request `31 00` | Seen: 30 °C |
 | Battery voltage | Yes | CarInfo `0x40`, pushed every 2 to 5 s | Seen: 13.6 to 14.1 V with the engine running |
 | Lights status | Yes | CarInfo `0x33`, pushed on change | Seen: headlights on = `0x04` |
+| Parking brake | Probably | Device status bit `0x0100`, kept in `Main.exe`'s memory only, never broadcast | Inferred; probe 0.5 reads it |
+| Doors, seatbelt, fuel level | No | Nothing in `Main.exe` handles them; the CAN box door frame is dropped | Decoded, see "What `Main.exe` receives from the MCU" |
 | Average speed, average fuel economy, range | No answer | CarInfo `0x41` / `0x00` trip block | `41 00` and `00 00` are never answered on this car |
 | Service reminder | Yes | CarInfo `0x40` | Seen: 1486 (probably km) or 7 months; not wanted for the dashboard |
 | Tyre pressure and temperature | Probably not | CarInfo `0x60` to `0x6D` | The factory screen's `61 01 00` got no answer in run 2 |
 | A/C fan speed | Probably | `Main.exe`'s memory (popup object) | Decoded: level 0 to 8; not wanted for the dashboard |
-| Vehicle speed | Yes, from GPS | GPS; the CAN box might also carry it | GPS seen; CAN box unknown |
+| Vehicle speed | Yes, from GPS | GPS only: a CAN box speed value would go to the missing `Radar` program and is not kept | GPS seen; CAN box: Decoded |
 | GPS heading, speed, altitude | Yes | SiRF receiver on `COM1:`, 38400 baud, NMEA | Seen |
 | Steering (tyre) angle, yaw rate | **Not found** | Nothing on the unit reads them | Rough GPS estimate while moving; real values need extra hardware |
 | Pitch and roll | **Not found** | | Pitch: rough slope from elevation change while moving; roll needs a motion sensor |
@@ -37,7 +39,8 @@ probe's driver list has no motion-sensor driver. The only "angle" and "tilt" nam
 `KEY_TILT`, `ScreenAngle`) are for tilting the screen, and `SteeringWheel` is the steering-wheel
 buttons setup. `CanInfo.exe` (the CAN-box screen) and `AC\AC.exe` are not installed on this unit,
 and no code in `Main.exe` builds the CAN-box message id `0xBE54` as a constant, so raw CAN-box data
-is probably not forwarded to any app. Probe run 3 confirmed it: turning the steering wheel produced
+is not forwarded to any app: `Main.exe` reads the CAN box frames itself and keeps only climate and
+parking-sensor values (**Decoded**, see "What `Main.exe` receives from the MCU"). Probe run 3 confirmed it: turning the steering wheel produced
 no bus message and no CarInfo frame. See "Without extra hardware" for what can still be estimated.
 
 The factory compass has only 8 directions (45-degree steps). For a smooth heading while moving, use
@@ -66,8 +69,10 @@ GPS course.
   `getMcuUartBandRate()` returns 115200 (**Decoded**, `SkCom.dll`). The disc drive is on `COM5:` and
   Bluetooth on `COM3:`. `Main.exe` keeps COM2 open, and Windows CE serial ports normally allow only
   one program at a time, so a dashboard has to go through `Main.exe`, not the port.
-- `Main.exe` turns MCU traffic into numbered events. Event `0x12` is `EVENT_CMD_CANBOX`, `0xC6` is
-  `EVENT_CMD_RX_CAN_CMD` (**Decoded**, name table at `Main.exe` RVA `0xad00`).
+- `Main.exe` turns MCU traffic into numbered commands, with one name table for what it sends
+  (`EVENT_*`, RVA `0xad00`, for example `0x12` `EVENT_CMD_CANBOX`) and another for what it receives
+  (`IND_*` and `*_RESP`, RVA `0xb048`), so one number can have two names (**Decoded**, see "What
+  `Main.exe` receives from the MCU").
 - Screens are separate programs under `\NandFlash\Application\`. On this unit `Infor\` holds
   `CarInfo.exe`, `Antitheft.exe`, `EQ.exe`, `Standby.exe` and `Wifi.exe` only.
 - Most screen programs stay running in the background with hidden windows (**Seen**: CarInfo,
@@ -133,11 +138,37 @@ The bus window of each app has this name as both class and title. `Main.exe`'s o
   maps the shared memory), then post message `0x6D1` to `AppMain` with arg1 = own id; `Main.exe`
   answers `0x6D2` with arg1 = that id (**Seen**).
 - **System info (Decoded and Seen).** `Main.exe` stores system state with
-  `SP_SetSysInfo(index, value)` (SkShareMem, a shared table of at least 0x45 ints readable with
-  `SP_GetSysInfo`) through one helper (RVA `0x1aa10`, 93 call sites), which also broadcasts
+  `SP_SetSysInfo(index, value)` (`SkShareMem.dll`, readable with `SP_GetSysInfo`) through one
+  helper (RVA `0x1aa10`, 93 call sites, arguments `this`, index, value), which also broadcasts
   `PostMessageW(HWND_BROADCAST, 0x52A, index, value)` to every top-level window. Seen: index 9 =
   lights (1 on, 0 off), index 8 = reverse / rear camera, index 0x41 also changes with page
   switches. Decoded: index 0 = Bluetooth connection state (see "Bluetooth").
+
+  The table is the 72-byte shared memory block `SkSysInfoShareMem`, laid out by `SkShareMem.dll`
+  (147,456 bytes) at RVA `0x3ff0`: 62 indexes, all single bytes except index 0x2C (a 32-bit int at
+  offsets 0x2C to 0x2F). Up to 0x2B the offset equals the index; from 0x2D on the offsets shift
+  (0x2D at 0x30, 0x41 at 0x45, 0x43 at 0x40 and so on; the full list is `probe/src/sysinfo.c`).
+  Indexes 0x36 to 0x3A and 0x40 do not exist. `SP_GetSysInfo` opens the block with
+  `CreateFileMappingW` and a size of 0, which can only open an existing block; only when that
+  fails does it create the block and fill in defaults. Who sets which index (all 93 calls):
+
+  | Index | Set by | Meaning |
+  |---|---|---|
+  | 0 | Bluetooth state handler (RVA `0x70428`) and others | Bluetooth connection (Decoded) |
+  | 1, 2, 0x1D, 0x2A, 0x2B, 0x2D | Bluetooth, Bluetooth serial port, iPod | their states (Inferred) |
+  | 5 | device status bit `0x0800` (MCU) | a car signal, unknown; nothing in the copied binaries reads it |
+  | 7 | `DeviceStatusManager` ("CallState") | phone call (Decoded) |
+  | 8 | device status bit `0x0400` (MCU) | reverse (Seen) |
+  | 9 | device status bit `0x0200` (MCU) | headlights (Seen) |
+  | 0xA | MCU command `0x28` `00 xx` | screen or standby state (Inferred) |
+  | 0x41 | `ViewManager` (RVA `0x55900`) | current page (Seen) |
+  | 0x42 | auto test | test mode |
+  | 0x44 | `DeviceStatusManager` | set to 0; not in the table, so only the broadcast happens |
+  | 3, 4, 0xB to 0x17, 0x2C, 0x30 to 0x35, 0x3B, 0x3E | start-up, settings, radio, main menu, navigation, telematics | program and settings states |
+
+  Only indexes 5, 8, 9 and 0xA come from MCU data, and none from doors, seatbelt, fuel or speed.
+  Probe 0.5 maps the block read-only and logs every value, because values that never change were
+  never broadcast while the probe listened.
 - **Heartbeat (Seen).** `Main.exe` sends `0x6D3` to every bus window about every 6 seconds; each
   registered app answers `0x6D4` with arg1 = its own id. `Main.exe` records `0x6D1` and `0x6D4` in
   its app-state table (RVA `0x542cc`), so `0x6D4` means "still alive", not "stopped". The probe
@@ -254,8 +285,9 @@ These layouts are implemented in `probe/src/carinfo.c` and covered by `tests/tes
 
 ### Tyre pressure (TPMS) (Decoded, partly Seen)
 
-- Tyre frames would arrive on the same path as compass and pressure: `Main.exe` names the MCU event
-  that carries all CarInfo frames (`0x3A`) `EVENT_CMD_TX_TPMS_DATA`. The radio receiver, if there is
+- Tyre frames would arrive on the same path as compass and pressure: Car Info requests go to the MCU
+  as command `0x3A`, which `Main.exe` names `EVENT_CMD_TX_TPMS_DATA`; the replies come back as
+  incoming command `0x3A`, named `IND_AIR_DATA`. The radio receiver, if there is
   one, sits behind the MCU; no Windows CE program talks to it directly.
 - The only tyre commands (`SkCom.dll` `CarInfoApi`) are: read all wheels (`GetAllWheelData`,
   `61 01 00`), pairing ("wheel study": `EnterWheelStudy`, `SkipCurWheelEnter{FL,FR,RL,RR,Spare}Study`,
@@ -272,13 +304,78 @@ These layouts are implemented in `probe/src/carinfo.c` and covered by `tests/tes
   hardware, and the sensor data format by its firmware, so it cannot be changed from the head unit.
   Pairing only chooses which sensor ids it accepts.
 
+## What `Main.exe` receives from the MCU (Decoded)
+
+Traced on 2026-11-17 to find car data that never reaches the bus. This is static analysis: what
+the MCU actually sends on this car is known only from the probe logs.
+
+`HostSessionManager` (RVA `0x48790`) accepts only MCU frames that start with `A0`; the command is
+`((b4 & 0x7f) << 8) | b5` and the payload starts at byte 6. Each frame becomes the internal
+message `0x200000D` (arg1 command, arg2 length). Exactly 8 functions test for that message, and
+all of them were read. Commands sent to the MCU are named in the `EVENT_*` table (RVA `0xad00`),
+commands received in the `IND_*` and `*_RESP` table (RVA `0xb048`).
+
+| Incoming command | Name | Handler (RVA) | What `Main.exe` does with it |
+|---|---|---|---|
+| `0x3A` | `IND_AIR_DATA` (the Car Info channel) | `0x58ddc`, branch `0x593dc` | Car Info command `0x32` is climate: payload bytes 2 to 6 go to the popup only (kinds 7, 8 (fan), 0, 1, 2). Every other command is posted to CarInfo (`0x4A`) and Telematics (`0x4B8`), so all other Car Info frames reach the ring |
+| `0x2C` | `IND_CANBOX_INFO` | `0x59104`, switch on the first payload byte | `21` climate; `22`, `23`, `25` parking-sensor values and `16` a 16-bit value, all for the `Radar` app; `17` to `20`, `24` and everything above `25` are ignored |
+| `0x2B` | `IND_C2CAN_INFO` | `0x58f38` | `1A` climate (7 bytes); `19` parking sensors for `Radar`; `17` the CAN adapter's version ("ADP %d V%d.%d", setup string `0x406`); the rest is ignored |
+| `0x39` | `IND_SWC_STATE` | `0x58f24` | two bytes to the `SWC` app as `0x538` |
+| `0x03` | `GET_DEVICE_STATUS_RESP` | `DeviceStatusManager` `0x73cec`, `0x73f28` | the device status word, below |
+| `0x28` | `IND_MCU_CMD` | `0x73cec` | `00 01` and `00 00`: system info `0xA` = 1 or 0 with a hide or show window broadcast (screen or standby, Inferred); `01`, `02`, `03 01`: internal |
+| `0x31` | test mode | `0x58e60` | starts `HeroTestMode.exe` |
+| `0x01`, `0x02`, `0x04`, `0x06`, `0x09` | last memory, version, settings, source switch | | settings and sources only |
+| `0x1D` to `0x25`, `0x30`, `0x32`, `0x33`, `0x4D`, `0x4E`, `0x1F`, `0x50` | radio, RDS, TV, keys, auto test | | not car data |
+| `0x2A`, `0x41`, `0x42`, `0x4B` and all others | `IND_CAN_IAP_CMD`, `IND_CAN_CONFIG`, `IND_MISC_FLAG`, `IND_GOLFCAN_INFO`, ... | none | dropped |
+
+Values for the `Radar` app (and for `SWC` when its window is missing) never reach the ring:
+`MsgSession::postMessage` (`SkCom.dll` RVA `0x1d6a0`) looks the window up first and writes
+nothing when it does not exist, and `Radar.exe` is not installed. Requests that the Car Info
+screen sends with arg1 `0x1C` go to the MCU as command `0x41` (`EVENT_CMD_CAMRY_CAN_TX`) sub 5
+(RVA `0x7a488`); nothing ever answers app `0x1C`.
+
+In the common aftermarket CAN box protocol (**Inferred** from the numbers only), `21` is climate,
+`22` and `23` the rear and front parking sensors, `24` doors and other body state, `16` speed and
+`29` the steering angle. The door and steering frames are exactly the ones this firmware drops.
+
+**Device status word.** `DeviceStatusManager` (object pointer at `[0xbe4cc]`, vtable `0x9bce8`,
+created by the getter at RVA `0x21700`) splits the 16-bit word (`p0 << 8 | p1`) into bytes at
+object +0x4C to +0x64 and keeps the previous copy at +0x65; its change handler (RVA `0x6a94c`)
+compares the two. Changes are skipped while object +0x30 is set.
+
+| Bit | Byte | Broadcast as | Meaning |
+|---|---|---|---|
+| `0x0200` | +0x4D | system info 9 | headlights (Seen) |
+| `0x0400` | +0x4E | system info 8 | reverse (Seen with the rear camera) |
+| `0x0800` | +0x4F | system info 5 | unknown; nothing in the copied binaries reads index 5 |
+| `0x0100` | +0x4C | not broadcast | the TV app holds something back while it is 0 (posts `0x49D`, RVA `0x59800`): probably the parking brake, from the usual "video only when parked" rule (Inferred) |
+| `0x8000` | +0x5C | not broadcast | posts `0x2000028` or `0x2000029` to Radio, USB, ALink and the source switch: probably mute or pause (Inferred) |
+| `0x0001`, `0x0008`, `0x0010`, `0x0080`, `0x2000`, `0x4000` | +0x54, +0x57, +0x58, +0x5B, +0x51, +0x52 | not broadcast | stored only; unknown |
+| `0x0002` | not stored | | a virtual call; unknown |
+| `0x0004`, `0x0020`, `0x0040`, `0x1000` | | | never read |
+
+The other bytes of the block (+0x50, +0x53, +0x55, +0x56, +0x59, +0x5A, +0x5D to +0x64) hold media
+and camera states set by other code. Probe 0.5 reads the 25 bytes read-only (`[devstatus]` log
+lines, same `Main.exe` size check and process handle as the fan reader), so its parking-brake step
+shows which bit moves.
+
+**Verdict.** Doors, seatbelt, fuel level, RPM and coolant: no handler, no stored field, no system
+info index and no text for them in `Main.exe`; if the MCU sent them, `Main.exe` would drop them.
+Gear: reverse only. Ignition: nothing named; `IND_MCU_CMD 00 xx` (system info `0xA`) is the only
+power-like signal (Inferred). Vehicle speed: only CAN box `16`, sent to the missing `Radar` app and
+not stored, so it cannot be read even if the MCU sends it. Climate arrives in three forms (Car Info
+`0x32`, CAN box `21`, C2CAN `1A`), all for the popup only. These values can only come from a link
+to the car's own network (see "What the firmware cannot provide").
+
 ## Climate
 
 Not wanted for the dashboard; kept for reference.
 
 `Main.exe` contains a climate popup (`aircontrolbar.bin`, window `AirControlBar` seen on the car)
 with `StAcOnOff`, `PbFanSpeed`, `StAuto`, `StWindMode`, `StTemp`, `StTempRight`, `StAir`
-(recirculation) and `StDemister`, so it decodes climate frames from the CAN box itself. There is no
+(recirculation) and `StDemister`, so it decodes climate frames itself: they arrive as Car Info
+command `0x32` (on other CAN boxes as CAN box `21` or C2CAN `1A`) and go only to the popup (see
+"What `Main.exe` receives from the MCU"). There is no
 `AC` folder on this unit and `AppAC`'s bus window name is `SWC`. In probe runs 2 and 3 the fan was
 changed while every bus message was logged, and no climate message appeared (**Seen**). The user
 confirms the popup does appear on screen when the fan or A/C changes; the probe never saw the
@@ -356,8 +453,26 @@ bytes), `SkBluetoothCore.dll` (694,272), `SP_BTCore.dll` (84,992), `SP_CSR8311.d
 `bt8311reg.dll`, `Bluetooth.ini`, `BTConfig.ini`; its screens are in `BluetoothRes.spp`,
 `BluetoothExRes.spp` and `BluetoothRes.bin` (next to the other `*Res.spp`). One process owns the
 bus window `Bluetooth` (app `0x0D`), the screen `BluetoothWindow` (JUCE, 800 x 480), `SP_BTWidnow`
-(sic, 1 x 1), `Legacy Phonebook Access` and two windows with GUID class names. None of these files
-has been copied off the unit yet.
+(sic, 1 x 1), `Legacy Phonebook Access` and two windows with GUID class names. The program folder
+was copied off the unit on 2026-11-18 (not kept in the repo); the three `Bluetooth*Res` files were
+not.
+
+**Profiles (Decoded, from the copied folder).** The stack is built with CSR's Windows CE 6 SDK
+(`CSR_SfWE_CE6_SDK` in a debug path, version string `Sfwe 1.1.13` in `Bluetooth.exe`), and
+`SP_CSR8311.dll` drives it through Microsoft's standard Bluetooth functions in `BTDRT.dll`
+(`BthCreateACLConnection`, `BthAuthenticate`, `BthNsLookupServiceBegin`, `BthSetPIN` and others) plus
+`WS2.dll` (Winsock). Each profile is a wrapper class that loads its CSR library by a name read from
+`HKLM\Software\CSR\Applications\...`: `CApi_HF` (hands-free calls), `CApi_A2dp` (music),
+`CApi_Avrcp` (music controls and browsing), `CApi_PB` (phonebook, `btp_ui_ext_pb.dll`,
+`csr_bt_vcard.dll`), `CApi_SPP` (serial-port profile: Apple accessory protocol, Pandora on Android,
+and an Android helper app for HDMI mirroring, `HDMISPP.cpp`), `CApi_HID` (the unit acts as a
+Bluetooth mouse, `CSR Mouse`, so touches reach the phone during mirroring: `SetHIDMouseMove`,
+`SetHIDMouseLeftClickValue`), `CApi_SearchPair` and `CApi_SystemEvent`. There is no network profile:
+no PAN (Bluetooth tethering), no BNEP (its transport), no DUN (dial-up) in any of the five files, and
+the probe 0.3 driver list has no Bluetooth network adapter. So the unit cannot reach the internet
+over Bluetooth with the factory software (see "Internet access"). `BTConfig.ini` holds the stack
+settings (`ComPort=COM3:`, `SSPMode=1`, `AutoConnect=0`, `UseDataBase=0`); `Bluetooth.ini` holds the
+device name `MITSUBISHI` and audio gains.
 
 **Talking to other programs (Decoded).**
 
@@ -417,6 +532,47 @@ host mode, so USB devices can be attached; which USB device drivers exist is in 
 The Bluetooth stack (CSR) provides serial-port profile ports, which could carry data from a
 Bluetooth OBD-II adapter or sensor if pairing works.
 
+## Internet access (Seen and Decoded, nothing tried on the car)
+
+- **No Wi-Fi on the Windows CE side.** The probe 0.3 driver list has no Wi-Fi driver and no
+  wireless settings service; the two SD host controllers serve only `SDMemory.dll` and
+  `triGDrv.dll` ("TriG SDIO driver", by its name and settings probably part of the satellite
+  receiver, not checked). The factory Wi-Fi mirroring is an outside video source: `Main.exe` lists
+  `eVideoWifi` and `eAudioWifi` among the switched inputs next to `eVideoCamera`, `eVideoAux1`,
+  `eVideoDVR` and `eVideoHDMI` (Windows CE's own sound is `eAudioWince`), and `Infor/Wifi.exe`
+  only calls `VideoIn::show` (input type 3, 0, 0, 800 x 480; RVA `0x1e38`), like the camera and AUX
+  screens (it still holds the name `AuxInWindow`). The Wi-Fi radio is in the mirroring module, and
+  the module reaches the unit only as video. An owner's guide from 2017 ("Updating Montero Sport
+  2016 HU firmware online", first on atbp.ph, read from a copy on eriels.com.ph; not tried here)
+  fits this: the module runs its own Wi-Fi network (the author's was "Mitsubishi Wireless TV 507"),
+  serves a setup web page at 192.168.59.254, shows its own setup menu on the screen as video, and is
+  controlled from a phone browser or Realtek's AirFun app (`com.realtek.airfun.client`), not from
+  the touch screen. Its Network > WiFi Connection menu joins another Wi-Fi network (it then gets an
+  address from that network and leaves its own), and System > Online Upgrade downloads and installs
+  new firmware, which the author hoped would fix AirPlay and Android mirroring. That updates the
+  module (inferred: the guide just says "HU"); this unit's Windows CE software is still the
+  2016-01-11 build. The module's internet connection never reaches Windows CE. Nothing on the
+  Windows CE side talks to the module either (Decoded): `Wifi.exe` imports no file, port or socket
+  functions (14 `COREDLL` ordinals, no `CreateFileW`, no `WS2.dll`); `SkCom.dll`'s `WifiApi` is only
+  the generic app shell (`remoteCallBack` at RVA `0xd320` goes straight to the shared receive code
+  at `0xa5cc`, and it exports no send calls); `Main.exe` has no Wi-Fi command among its MCU events,
+  only `SRC_WIFI` in the source list; and no USB network device was attached in the probe 0.3
+  survey.
+- **No network over Bluetooth** (see "Bluetooth"): the factory stack has no PAN or DUN profile.
+  Dial-up over `COM4:`/`COM9:` would also need pairing and a stored dial-up entry (both registry
+  changes), and iPhones and most current Android phones no longer offer dial-up.
+- **USB networking is the only route.** The network software runs: `tcpstk.dll` (TCP/IP),
+  `tcpip6.dll`, `AFD.Dll` and `ws2serv.dll` (Winsock; vendor code imports `WS2.dll`), `NDIS.Dll`,
+  `PPP.Dll`, `autoras.dll`, `dhcpv6l.dll`, and `USB8023.DLL` is loaded for USB classes 2, 224 and
+  239 (see "What the firmware cannot provide"). Android USB tethering (RNDIS, class 224) matches;
+  iPhone tethering uses Apple's own USB protocol and will not. A board that joins a phone's Wi-Fi
+  hotspot and shows up as a USB network adapter would also work. Probe 0.5's Survey lists the
+  network adapters with a phone tethered; whether a connection works is still unknown.
+- **For a program that fetches data:** load `WS2.dll` at run time (a missing import stops a CE exe
+  from loading), and bring a TLS library (for example BearSSL) for HTTPS, because Windows CE 6's own
+  secure connections are probably too old for most sites today (not checked on the unit). Plain
+  HTTP needs neither.
+
 ## What the firmware cannot provide
 
 Steering angle, yaw rate, pitch, roll, engine RPM and coolant temperature are not read by anything
@@ -469,7 +625,8 @@ USB serial adapter would need a Windows CE driver added. Two built-in routes avo
   changing a binary in internal storage. The function then cuts the bytes into 32-byte pieces, each
   copied into a newly allocated object and queued, so there is no fixed buffer another program
   could read. Whether the MCU passes any steering-angle message from the car stays unknown; run 3
-  showed nothing reaches the bus when the wheel turns.
+  showed nothing reaches the bus when the wheel turns. Even if it does, `Main.exe` drops the CAN
+  box frame that carries it in the common layout (`29`) and keeps nothing like it.
 - **GPS estimates, while moving only.** From the NMEA course and speed (one update per second):
   - yaw rate = change of course per second (allowing for the wrap at 360 degrees);
   - tyre angle = atan(wheelbase x yaw rate / speed), wheelbase 2.80 m. This is the average
@@ -506,14 +663,18 @@ USB serial adapter would need a Windows CE driver added. Two built-in routes avo
 
 ## Dashboard
 
-`dashboard/` (version 0.6.0, **built, not run on the car yet**; 0.1.0 ran, see "First run" below) is
+`dashboard/` (version 0.9.0, **built, not run on the car yet**; 0.1.0 ran, see "First run" below) is
 the dashboard from the map-background design canvas
 (https://claude.ai/artifact/FkFvhi7mSFDTMhACtCK7ST, private; versions 0.1 to 0.3 followed the earlier
 column layout of https://claude.ai/artifact/9WDQyDaPa6RprDPPk3ST8x). It is a complete SD `Navigation`
 folder: `Navigation.exe`, `fonts/` (Barlow), `README.txt`, and `TotalCommander/cecmd.exe` when Total
-Commander was built. The map's files go in a separate `Map` folder at the SD card root (see "Map"
-and "Address" below). Besides the dashboard page there is a car info page with fixed facts about
-the car (see "Car info page" below), opened from a button in the header.
+Commander was built. Since 0.9 the map is the vector map, in a separate `VMap` folder at the SD
+card root, turned with the direction of travel up (see "Vector map in the dashboard" below; 0.2 to
+0.8 showed the north-up picture map from the `Map` folder, see "Map"); the address file stays in
+the `Map` folder (see "Address"). Besides the dashboard page there is a car info page with fixed facts about
+the car (see "Car info page" below), opened from a button in the header, and a map page (0.7, see
+"Map page" below), opened by tapping the car on the map. On a holiday a notification shows it at
+the top of the map (0.8, see "Holiday notification" below).
 
 Layout (800 x 480, `dashboard/src/render.c`): the offline map fills the whole screen, and every
 widget sits on its own semi-transparent panel over it. The panels are tinted, not blurred, to spare
@@ -522,7 +683,7 @@ at night (the user's choice for 0.5; 0.4 used 80 % and 74 %), with no shadows. A
 screen wide (133 px): speed and elevation on the left, outside temperature, pressure and battery on
 the right; the heading panel (bottom left) and the address panel (bottom right) are 2/6 wide
 (266 px, 88 px tall); the zoom buttons, scale bar and map credit sit at the bottom centre, a
-north-up mark at the top right of the map. Icons are drawn on a pixel grid at the size they are
+compass at the top right of the map (0.9; a north-up mark before). Icons are drawn on a pixel grid at the size they are
 shown (20 px in the header, 14 to 16 px in panels): whole-pixel corners, 2 px strokes, slopes of
 45 degrees or 2:1, so they stay recognizable on the low-resolution screen without smoothing.
 Graphs are a line through every sample (straight pieces). 0.4 drew smooth waves instead: the
@@ -552,7 +713,7 @@ height of a change was never the problem: a 30 m climb moves the elevation line 
 | Outside (right column), graph of 3 h | CarInfo `0x31` | sampled every 90 s; change shown after 30 min |
 | Heading (bottom left, 2/6) | GPS course above 6 km/h (back below 4 km/h) | otherwise the car's 8-point compass (`0x11`); a compass tape (2.4 px per degree, ticks every 5 degrees, the eight points as letters) under a fixed mark, then the point and the degrees ("Car compass": the point only) |
 | Battery (right column), graph of 30 min | CarInfo `0x40` | 13.2 V and up charging, 12.2 to 13.2 V not charging, below 12.2 V low, 14.8 V and up too high (low and too high in the warning colour) |
-| Map (whole screen, behind the panels) | GPS position, `\SD\Map\*.pack`, `\SD\Map\Day\*.pack` | north-up offline map with the car at (400, 260), the middle below the header; arrow along the GPS course while the heading comes from GPS, otherwise a dot (grey without a fix); starts at the highest zoom level the files hold (the user's rule: 15 with the zoom 15 pack, else 14) and goes back to it when the map style changes, unless +/- were used; dark map at half brightness at night, light map (`Map\Day`) by day, the dark one by day when there is no light one |
+| Map (whole screen, behind the panels) | GPS position and course, `\SD\VMap\*.vmap` | vector map turned with the GPS course up (0.9), the car at (400, 260), the middle below the header; it glides to each new GPS position and course over 1 s; below 4 km/h (heading from the car's compass) it keeps its last turn, north up until the car first moves; arrow along the GPS course while the heading comes from GPS, otherwise a dot (grey without a fix); zoom in half levels from the file's lowest data zoom to 19, starting at 16 (large print) and then at the last zoom chosen, saved as `map_zoom_tenths=` in `dashboard-settings.txt`; dark look at half brightness at night, light look by day, both in the same file. 0.2 to 0.8: north-up picture map from `\SD\Map\*.pack` and `Map\Day` |
 | Address (bottom right, 2/6) | GPS position, `\SD\Map\*.addr` | nearest named road within 50 m (else "No named road nearby"), then one line: "Brgy." and the barangay (else "Near" and the nearest named place), a middle dot, city and province (the province left out when the line is too wide); looked up on its own thread after about 15 m or 30 s; the last address stays, marked "Last GPS position", without a fix; never logged |
 | Speed (left column, top) | GPS | current speed large (a smaller font for three digits), average (counts only above 3 km/h) and top speed (highest median of three readings) under it, both since the dashboard started and not saved. The model still keeps the 10-minute speed series; 0.4 does not draw it |
 | Header (semi-transparent, over the map) | GPS time, bus | clock: GPS UTC time and date (1024-week rollover corrected), kept running on the tick count when the signal drops; the unit's clock only when its year is 2020 or later. Time zone: the menu choice (`dashboard-settings.txt`), else UTC+8 (`DEFAULT_UTC_OFFSET_MIN` in `dash.c`, the user's choice). The model can also derive it from the unit's clock or time-zone setting, but `dash.c` always passes a zone because both are unreliable on this unit. Times are in 12-hour form with AM or PM (the user's choice, 0.5). GPS status ("Waiting for GPS" without a fix, its icon blinking 1 s on and 1 s off at the 1 s repaint, the user's choice in 0.5.3), "Headlights on" while the bus reports them (`0x52A` index 9 or `0x33` bit `0x04`), "No car data"; on the right sunset (with the time left; without it, or left out, when it would run into the items on the left) or sunrise from the last GPS position, then the car info button (an icon only: a car with an "i" badge) |
@@ -596,6 +757,54 @@ Philippine engine has a diesel particulate filter (DPF); if it does, the oil mus
 instead. The page draws no map, so it costs less than the dashboard; the model keeps updating
 behind it.
 
+Map page (0.7, `render_mappage` in `render.c`, the view in `mapview.c`, **built and tested on the Mac
+only**): the user asked for a full-screen map without the panels that a finger can drag. Tapping
+the car on the dashboard's map opens it: a box of 100 x 100 px around the car (`CAR_HIT`), much
+larger than the arrow (26 px) or dot (16 px), so a finger finds it in a moving car; it is clear of
+the zoom buttons and the side columns. Only while the map picture is drawn (map files, a position
+and the back buffer). The page draws the map across all 800 x 480 pixels with the car,
+Back at the top left (the whole corner answers), the north-up mark (0.9: the compass) at the top right, the scale bar
+at the bottom left (at the car's latitude: across Luzon the scale differs by 3 % at most), the map
+credit at the bottom middle (the licences ask for it to stay visible), and the zoom buttons at the
+bottom right; no header, no panels, so no tinting either. Rules, the user's choices of 2026-11-17
+(they accepted the suggested defaults): the page has its own zoom, starting at the dashboard's,
+so the dashboard is unchanged after Back; it follows the car (the car in the middle of the screen)
+until a drag; after a drag the view stays where it was left and the car moves on it (it is not drawn
+within 20 px of the screen's edge), and a "Centre on car" button (the GPS crosshair icon) appears
+left of the zoom buttons; the view follows the car again after 30 s without a touch
+(`MAPVIEW_IDLE_MS`); zooming keeps the middle of the screen (world pixels doubled or halved per
+level). A press becomes a drag only after the finger has moved 10 px (`MAPVIEW_DRAG_PX`): touch
+screens jitter by a few pixels and a tap must not move the map. The point under the finger stays
+under it, measured from where the finger went down (no drift from adding up small steps). A dragged
+view stays inside the box the map files cover at that zoom (`map_area`), so it never drifts into
+empty grey. Two-finger zoom is not possible: Windows CE 6 has no gesture support, and the screen is
+most likely single-touch (not checked on the unit).
+
+Dragging uses `WM_MOUSEMOVE`, which Windows CE sends only while the finger is down; no new COREDLL
+import was needed (the 0.7.0 import table is identical to 0.6.0's, checked with `objdump -p`), and
+`SetCapture` is not used (the window fills the screen). Windows sends `WM_PAINT` only when no other
+message waits, so the frame rate adapts to the unit. The risk is decoding new tiles while dragging:
+every 256 px dragged brings in a row or column of 2 to 5 tiles, each read from the card and decoded
+from PNG, and how long one takes on the unit is still unmeasured (see the open questions under
+"Map" below). So on the map page `map_compose` reads and decodes at most 1 new tile per frame while
+a finger drags (`MAP_DRAG_DECODES`) and 3 otherwise (`MAP_PAGE_DECODES`); the tiles left out are
+drawn in the pack's background colour and counted in `MapSet.skipped`, and `dash.c` asks for another
+frame until none are left. The dashboard page keeps no limit (as in 0.6). The tile cache grew from
+20 to 30 tiles (3.75 MB) so a drag back finds the tiles it just left; if that much memory is not
+free, 20 (`[map] N tiles kept in memory` in the log). At zoom 16 one tile is about 590 m across
+around Luzon (2.3 m per pixel), so the screen shows about 1.8 x 1.1 km; looking further is cheaper
+after zooming out. The log gets `[page] map, zoom N` when the page opens and, when it closes, the
+frames drawn while dragging, the slowest of them (map, buttons and copy to the screen) and the tiles
+decoded; the 10-minute `[map]` line adds how often the page was opened and the slowest frame while
+dragging since the start. The view's middle is a position, so it is never logged.
+
+Since 0.9 the page shows the vector map: while it follows the car it is turned like the dashboard
+(the GPS course up), and a drag keeps the turn it had when the finger went down (the finger's move
+is turned back to north up before it moves the middle, so the point under the finger stays under
+it at any turn); "Centre on car" and the 30 s rule bring back the turn with the car. The tile
+decode limits above (`MAP_DRAG_DECODES`, `MAP_PAGE_DECODES`, the 30-tile cache) went with the
+picture map; see "Vector map in the dashboard".
+
 Car data counts as current for 30 s after the last CarInfo reply, GPS for 3 s after the last RMC
 sentence. The bus client is the probe's: it joins as `TerminalA` (waits while another `TerminalA`
 window exists, for example the probe), reads the ring backlog, sends `81 01 01` once, then `11 00`,
@@ -613,9 +822,14 @@ power and cannot be used for the time or the date; dashboard 0.2 takes both from
 
 Still open: whether `AUTORUN=1` starts it at boot and whether `Main.exe` then shows or hides it;
 how long the GDI repaint takes once a second (0.4 composes the whole 800 x 480 map and tints the
-panels every second); whether the unit's time-zone setting is right.
+panels every second; the copy of the 800 x 480 back buffer alone took about 40 ms in the vector
+map test); whether the unit's time-zone setting is right.
 
-### Map (dashboard 0.2, **built and tested on the Mac only**)
+### Map (dashboard 0.2 to 0.8, **built and tested on the Mac only**; replaced by the vector map in 0.9)
+
+Since dashboard 0.9 this picture map is no longer shown (see "Vector map in the dashboard"); the
+build tools, the `Map` folder and `map.c` stay (the address file and the pilot's data come from
+the same build, and `map.c`'s tests still run).
 
 The user wants to see where the car is, with no routing (the factory GenieTek `Navigator.exe` has a
 Philippine map from 2018-01-12 that can no longer be updated). The map is made on the Mac from
@@ -664,13 +878,359 @@ shortcut); its zoom 15 in one pack of 414.0 MB, 8 min (102,957 rendered at about
 © OpenStreetMap contributors" to be visible; the map shows "© OpenMapTiles © OpenStreetMap".
 No contour lines or hill shading yet (the OpenMapTiles schema has no elevation).
 
+Zoom 16 is drawn in **large print** (the user's choice, 2026-11-17) and is the level the map
+starts at: the map twice as close as at zoom 15, with text, lines, dots and label halos twice
+their zoom 15 size, so it reads like zoom 15 enlarged but stays sharp. Enlarging zoom 15 on the
+unit (each pixel drawn as 2 x 2) was compared in previews first and turned down as blocky.
+`make_style.py` gives line widths and dot sizes a zoom 16 stop (`grow`) and each label layer a
+`-large` copy from zoom 16, the normal one stopping there. Labels need the copy because the
+renderer places them using their size one zoom level further in (and at style zoom 18 for the
+spacing along roads), so a zoom 16 size in the same layer would move or drop zoom 15 labels. Check:
+300 busy tiles at zoom 13 to 15 came out byte-identical from the old and the new style. Build
+(2026-11-17, same data): 1,125,019 tiles per style, 383,705 rendered (about 250 per second) and
+741,314 by the sea shortcut; dark 1,054.2 MB in 25 min, light 1,061.1 MB in 26 min, one pack each.
+A style change starts a fresh tile cache and the sea shortcut reads zoom 15 from that cache, so zoom
+8 to 15 were rendered again first (13 and 14 min, packed into a throwaway folder; the zoom 8 to 15
+files in `dist/map` are still those of 2026-11-15). The `Map` folder now holds 1.71 GB (dark), its
+`Day` folder 1.72 GB (light), 3.46 GB with the address file. The dashboard needs no change for it:
+it starts at the highest level the files hold, so 16 once that pack is on the card (checked in the
+previews through `map.c` with the real files, not yet on the car).
+
 The log gets `[map] N dark and M light (Day folder) map files, zoom A to B` at start, `[map] light
 map` or `dark map` when the style changes, and, every 10 minutes, the zoom, tiles decoded,
 failures, read errors and the slowest map draw in ms. Open questions for the first run: whether
 `CreateDIBSection` with `BI_BITFIELDS` 565 works on this unit (now also as the back buffer that GDI
-draws text on), how long a tile takes to decode from the SD card (the first draw after a zoom or
-style change decodes up to 15), how long composing and tinting the full screen takes, and whether
-the map and the see-through panels are readable in sunlight.
+draws text on; the vector map test's identical back buffer worked on the car, 2026-11-18, and its
+copy to the screen took about 40 ms, see "Vector map pilot"), how long a tile takes to decode from the SD card (the first draw after a zoom or
+style change decodes up to 15), how long composing and tinting the full screen takes, whether
+the map and the see-through panels are readable in sunlight, and (0.7) whether dragging the map
+page feels smooth: the `[page] dashboard (map page: ...)` line gives the slowest frame while
+dragging, which tells whether `MAP_DRAG_DECODES` and the 10 px drag allowance need changing.
+
+### Vector map pilot (first car run 2026-11-18, **Seen**)
+
+The user asked (2026-11-17) for a map that works like a map app: roads, names and markers drawn
+by the unit itself, rotation, and zooming between levels, instead of ready-made pictures. They
+chose full vector drawing, including roads, and a pilot over one small area, Dasmarinas City,
+Cavite, to find out how hard it is and how fast it runs. The picture map (`dist/map/`, `\SD\Map\`)
+and the dashboard are untouched: the pilot has its own data folder and its own test program.
+
+Data (`tools/vmap/build_vmap.py`): the OpenMapTiles vector tiles that `build_map.sh` already made
+(`dist/map-build/tiles/openmaptiles.mbtiles`, zoom 0 to 14) are decoded (`mvt.py`), each feature
+is matched against the rules compiled from `make_style.py`'s two styles (filters, colours of both
+palettes, line widths, dot sizes and text sizes for every 1/8 zoom from 8 to 19; widths keep
+growing by 1.4 per level past zoom 16 so roads stay road-like close up; the large print label
+copies are folded in, text growing from its zoom 15 size at 15 to the large size at 16), cut
+exactly at its tile's edge (areas, lines, and area outlines without the cut edges; points kept
+only in their own tile) and split into an 8 x 8 grid per tile, because the source merges hundreds
+of buildings or streets into one feature and the unit could then not skip what is off screen.
+Output: `dist/vmap/VMap/dasmarinas.vmap`, bounds 120.89,14.23,121.02,14.39, data zooms 10 to 14
+(86 tiles, 56 of them at zoom 14), 58 drawing rules, 6.26 MB (11.1 MB uncompressed), about 15 s.
+For comparison the picture map holds 3.46 GB for Luzon; the vector tiles for all of Luzon are
+253 MB, so a Luzon `.vmap` would be roughly 300 to 400 MB (estimate). Format: `mtvmap.py`
+(header, rules, per data zoom a tile index, zlib-compressed tiles of features, parts, 16-bit
+points in tile units, draw lists per rule and UTF-8 names).
+
+Drawing (`dashboard/src/vraster.c`, `vfont.c`, `vmap.c`, portable C, no floating-point maths in
+the inner loops): areas and lines are filled with smooth (anti-aliased) edges by the cell method
+of FreeType and AGG, every tile of a rule in one pass so tiles join without seams; cells go into a
+full-screen grid with a bitmap of touched cells (3 MB for 800 x 480) instead of a sorted list,
+which halved the time. Lines become outlines: a box per segment, a wedge or rounded wedge on the
+outer side of each bend, half discs for round ends (left out under 2 px wide), dashes cut first.
+Labels: letters are read from `Barlow-Medium.ttf` as outlines (composite letters such as n with a
+tilde included) and filled the same way, with a halo; place names stay upright, road and river
+names follow their line letter by letter and are never upside down; the most important rules
+place first, nothing overlaps (8 px grid), and the same name is not repeated nearby. The view is a
+Mercator centre, any zoom, any bearing (the direction pointing up), dark or light, dimmed or not.
+The new COREDLL imports are none: `VMapTest.exe` imports 62 functions, all among the dashboard's
+(`tools/build_vmaptest.sh` writes both lists); `DeleteDC`, `DrawTextW` and `wcscat` were taken
+out for that.
+
+Previews (`tests/test_vmap.py`, `VMAP_PREVIEW_DIR`): the pictures match the picture map's styles;
+road names bend round roundabouts, labels stay upright at any bearing, the day and night maps
+both work. Speed on the Mac (Apple Silicon, one core; best of 5): zoom 16 about 6 ms, zoom 17
+turned 35 degrees 3 ms, zoom 14 19 ms (7,491 features from 20 tiles), zoom 12 9 ms. Processor
+instructions per frame (from `/usr/bin/time -l`): zoom 16 73 million, zoom 17 44 million, zoom 14
+200 million, zoom 12 102 million. The head unit's processor is not known exactly (a SiRF Atlas
+family chip, ARM9 or ARM11 class, probably 400 to 600 MHz, no floating-point unit, no divide
+instruction); at one to two cycles per instruction that is very roughly 0.15 to 0.3 s per frame
+at zoom 16 and 17 and 0.5 to 1 s at zoom 14. **Estimate only**: `VMapTest.exe` measures it.
+
+`VMapTest.exe` (`vmaptest/`, version 0.1.0): copy `dist/vmaptest/VMapTest` and `dist/vmap/VMap` to
+the SD card root, start it from Total Commander. It logs free memory, then runs a series of 12
+views over the middle of the area (zoom 12 to 18, 16.5, turned 30 degrees, dark and dimmed, no
+labels), each drawn 3 times, logging per view the time to draw (tiles read, areas, lines, labels),
+the copy to the screen, features, cells, labels, and the three costliest rules. Then a finger drags
+the map, and buttons zoom by half a level, turn by 15 degrees, spin once round (24 frames, average
+and slowest), switch day and night, labels, rerun the series, and exit. The log has no positions;
+the test reads nothing from the car, the bus or the GPS.
+
+First car run (`vmaptest-log.txt`, 2026-11-18, two starts, the series run four times; **Seen**):
+it starts from Total Commander, finds `\SD\VMap\dasmarinas.vmap`, loads the font, and the 16-bit
+`CreateDIBSection` back buffer (`BI_BITFIELDS` 565, bottom-up) works, as the dashboard 0.2 and
+later assume. **Memory: 413,484 KB of RAM, 348,580 KB free** at start (about 1 MB used after
+opening the map), far more than the dashboard's caches assumed. Drawing times, light map with
+labels, after the tiles are in memory (the four series agree within about 10 %):
+
+| Zoom | Draw | Features | Cells |
+|---|---|---|---|
+| 12 | 265 ms | 8,665 | 450,000 |
+| 13 | 570 ms | 10,509 | 1,050,000 |
+| 14 | 525 ms (the same turned 30 degrees) | 7,422 | 853,000 |
+| 15 | 395 ms | 2,295 | 627,000 |
+| 16 | 195 ms (turned 30 degrees, dark: the same; no labels 170 ms) | 516 | 299,000 |
+| 16.5 | 142 ms | 313 | 189,000 |
+| 17 | 103 ms | 111 | 124,000 |
+| 17.5 | 80 to 100 ms (any bearing) | 84 | 87,000 |
+| 18 | 56 ms | 42 | 58,000 |
+
+Copying the 800 x 480 picture to the screen (`BitBlt` from the DIB section) takes **about 40 ms
+every frame** (768 KB, about 19 MB/s), on top of the drawing: likely a format conversion or the
+bottom-up row order; not yet checked. Reading and inflating tiles: the first draw at zoom 14 (15
+new tiles) took 870 to 890 ms instead of 525, about 23 ms per zoom 14 tile. Turning costs nothing
+extra, labels about 25 ms. The costliest rules: minor street casings and minor streets (#23, #31:
+160 and 90 to 145 ms each at zoom 13 and 14), buildings (#12: 40 ms at 16, 93 to 117 ms at 15),
+dotted paths (#20, 33 ms at 14). Dragging at zoom 16: 214 to 296 ms a frame (3 to 4 frames a
+second with the copy); at 17.5: 81 to 97 ms (about 7 frames a second). Spin at 16: 216 to 277 ms
+on average, slowest 395 ms. The unit runs about 30 times slower than one Mac core (zoom 16: 5.8
+against 195 ms), about 375 million Mac instructions' worth a second: faster than the estimate
+above, so the processor is probably newer than ARM9 (not identified; `KernelIoControl` with
+`IOCTL_PROCESSOR_INFORMATION` would name it). The colours looked right on the screen (the user,
+2026-11-18).
+
+What it means: the unit can draw a full vector map, turned, from zoom 16 in 0.1 to 0.2 s plus
+the copy, so following the GPS heading up with one redraw a second works now; zoom 13 to 15 takes
+0.4 to 0.6 s. Smooth dragging and turning do not work by redrawing (3 to 4 frames a second at
+zoom 16). The user's rule (2026-11-18): no simpler drawing, every detail stays at every zoom; use
+the memory for speed instead.
+
+Speed from memory (`VMapTest.exe` 0.2, **built and tested on the Mac only**):
+- Map pictures (`dashboard/src/vtiles.c`): the map is drawn north up, without labels, into
+  256 x 256 RGB565 pictures (128 KB) by the same `vmap_draw` (shapes only), up to 480 kept
+  (61 MB, allocated as needed, least recently used dropped but never one the last frame used). A
+  frame copies them onto the screen: rows straight across when not turned or scaled, otherwise
+  16 x 16 pixel blocks mapped back into the pictures with whole-number steps, the nearest picture
+  pixel ("Fast") or the four nearest mixed ("Smooth"). A picture not drawn yet is taken from the
+  zoom shown before, scaled, or left in the land colour; pictures outside the file's area are
+  land. Missing pictures are drawn one at a time while nothing else happens (a 1 ms timer, whose
+  messages come only when the queue is empty): the screen first, nearest the middle first, then
+  two rings beyond it, then the screen at zoom +0.5 and -0.5; while a finger drags, one per frame.
+  Mac checks: north-up frames from pictures equal the full draw pixel for pixel when the view's
+  middle sits on a whole pixel; turned 30 degrees, 2.6 % of pixels differ (softer edges). Mac
+  timings: a frame from pictures 0.03 ms north up, 0.35 ms turned fast, 1.4 ms smooth, against
+  6.6 ms for the full draw at zoom 16; a picture takes 1.25 ms at zoom 16 and 3.6 ms at zoom 14
+  (12 for a screen: about twice a full draw, done once). At the measured factor of about 30 that
+  would be very roughly 1 to 40 ms per frame on the unit, plus labels and the copy.
+- Letter pictures (`vmap.c`): each letter is filled once per size (1/4 px), angle (128 steps of
+  2.8 degrees), halo and half-pixel position, with its halo grown from it, and kept (4,096 slots);
+  labels then only mix kept pictures in. Mac: labels 30 to 45 % faster with the cache full.
+- The whole Dasmarinas file stays decoded (128 data tiles kept).
+- The copy: 0.2 times four ways on the unit and keeps the fastest: `BitBlt` from the bottom-up DIB
+  (0.1's way), from a top-down DIB, `SetDIBitsToDevice`, and writing straight into the screen
+  memory (`ExtEscape GETRAWFRAMEBUFFER`, used only for an 800 x 480 RGB565 screen in the program's
+  reach and only while its window is in front). It also logs bits per pixel, the processor
+  (`GetSystemInfo`, `KernelIoControl` `IOCTL_PROCESSOR_INFORMATION`) and uses
+  `QueryPerformanceCounter` for timings under a millisecond when the unit has it. Every function
+  the dashboard does not import is looked up with `GetProcAddressW`; the import table is still the
+  same 62 dashboard functions.
+- A turned view is drawn again in full 0.3 s after it stops moving ("sharp"); north up needs no
+  redraw (the pictures are exact).
+- New buttons: Drive (15 s at 50 km/h, heading up, turning 6 degrees a second, frames as fast as
+  they come), Smooth/Fast, Pictures/Direct. The series now times per zoom (12, 14 to 18) the full
+  draw, the pictures for the screen from none, frames from pictures north up and turned, labels
+  with an empty and a full letter cache, then spins (smooth and fast), a drag over drawn and
+  undrawn ground, and 10 s of driving at zoom 17.
+
+Second car run (`VMapTest.exe` 0.2, 2026-11-18, **Seen**): the processor is a **Cortex-A9**
+(`KernelIoControl`: core "Cortex-A9", name "TT6X0A", vendor "SiRF"; clock not given; one core;
+`GetSystemInfo` type 2577, level 4, revision 6), so ARMv7-A; the dashboard and probe are built
+for ARMv4T. The **screen has 32 bits per pixel** (`GetDeviceCaps`); the driver offers no screen
+memory (`GETRAWFRAMEBUFFER`). Copying the 16-bit frame: bottom-up `BitBlt` 41 ms, top-down 40 ms,
+`SetDIBitsToDevice` 43 ms: the driver converts 16 to 32 bits while copying, which explains
+0.1's 40 ms. Memory: 350 MB free at start, 326 MB after the series (72 pictures kept). Map
+pictures, from none: zoom 12 64 ms each, 14 85 ms, 15 57 ms, 16 29 ms, 17 12 ms, 18 7 ms (12 to
+16 for a screen). Frames from pictures: north up 2 to 6 ms, turned 11 ms (Fast) or 30 to 37 ms
+(Smooth); labels 13 to 40 ms (17 to 24 at zoom 16, with the letter cache full); copy 39 to 45 ms.
+Spin at 16: 77 ms a frame Fast (12.9 a second), 106 ms Smooth (9.4). Drag at 16: 63 to 71 ms
+Fast without or with labels (14 to 15.7 a second), 118 ms Smooth; the same drag drawn in full
+every frame (0.1's way, "Direct"): 291 to 306 ms (3.3 a second). Drive at 16: 80 ms Fast (12.4
+a second), 103 ms Smooth; Direct 269 ms (3.7). The sharp redraw after turning: 215 to 320 ms.
+Light map, dark map and no labels behave the same. After the switch to the dark look, 14
+pictures were missing for a moment (drawn within a second).
+
+What 0.3 changes (**built and tested on the Mac only**), still without leaving out any detail:
+the copy test adds a 32-bit top-down DIB section (`BI_RGB`, 0x00RRGGBB) and `SetDIBitsToDevice`
+from it, and draws frames in 32 bits when that copies fastest (`VSurface.px32`: the filler, the
+letter mixing, the land fill and the compositor all write 32 bits; map pictures stay 16-bit,
+widened while composed, so a frame from 16 and 32-bit agree exactly); the screen-memory way is
+gone. Labels: while the map moves, the last placement is kept and moved and turned with it
+(`VM_DRAW_LABELS_KEPT`; placed afresh after 20 degrees or 120 pixels, and once the map rests);
+letters are looked up in the font once and kept (a table of 12,288 code points), letter pictures
+sit in groups of four slots so letters used together no longer evict each other, and road
+directions are worked out once per road. Mac: labels placed afresh 0.29 to 0.61 ms (0.42 to 1.15
+before), kept 0.05 to 0.19 ms. The exe is built twice: `VMapTest.exe` for ARMv7-A (`-march=armv7-a
+-mtune=cortex-a9 -mno-unaligned-access -mword-relocations`, ARM mode, no floating-point or NEON
+instructions; the bit scan of the filler becomes count-leading-zeros; `-mword-relocations` because
+the Windows CE object format cannot hold MOVW/MOVT address relocations) and
+`VMapTest-ARMv4.exe` as before, in case the first does not start. Both import the same 62
+dashboard functions.
+
+Third car run (`VMapTest.exe` 0.3, 2026-11-18, both builds, ARMv4 first; **Seen**): both start.
+32-bit frames copy in **8.9 to 9.3 ms** (`BitBlt` or `SetDIBitsToDevice` from a 32-bit top-down
+DIB) instead of 40 ms. The ARMv7 build draws 5 to 10 % faster (full draw at zoom 16 175 against
+189 ms, pictures 27 against 29 ms each). Frames from pictures, ARMv7: north up 8 to 16 ms (widening
+to 32 bits), turned 19 ms Fast and 41 to 50 ms Smooth; labels kept while moving 1 to 4 ms, placed
+afresh 6 to 30 ms. Drag north up at zoom 16: 28 to 33 ms a frame, **30 to 35 frames a second**;
+drag turned 75 degrees: 41 to 45 ms Fast (22 to 24 a second), 73 ms Smooth (13.5); spin 44 ms
+Fast (22), 70 ms Smooth (14); drive heading up 37 ms Fast (26 to 27 a second), 66 ms Smooth (15).
+About 7 ms of each frame was the test's button bar. The user wants Smooth turning (2026-11-18).
+
+What 0.4 changes (**built and tested on the Mac only**), every detail still drawn:
+- Map pictures hold one more row and column (257 x 257, copied from the right and lower
+  neighbours), so mixing four pixels never needs a second picture; composing goes row by row in
+  runs that stay inside one picture (no slow per-pixel path except where a picture is missing).
+- Smooth turning with NEON (`dashboard/src/vtiles_neon.c`): eight pixels at a time, the four
+  picture pixels of each loaded into vector lanes, the per-colour mixing and the widening to 32 bits
+  vectorised; the same integer formula as the plain code, so frames are identical (tested on the
+  Mac, whose processor has NEON too). Mac: a smooth turned frame 1.6 to 1.8 ms plain, 0.6 ms with
+  NEON. Only the ARMv7 exe has it (`-mfpu=neon -mfloat-abi=softfp`; CeGCC 9.3 crashes on the NEON
+  "by scalar" intrinsics such as `vmulq_n_u16`, so only vector-by-vector ones are used). Because a
+  NEON instruction the system does not allow would stop the program, it starts itself again with
+  `--neon-check`; that helper runs `vt_neon_selftest` and ends with 77 when every pixel agrees; only
+  then does the program use NEON (`WaitForSingleObject`, `GetExitCodeProcess` looked up at run time).
+- The copy test adds `SetDIBitsToDevice` from ordinary memory, and the series compares drawing a
+  smooth turned frame into the DIB section and into ordinary memory, keeping the quicker pair.
+- The other look (day or night) is drawn ahead while idle; the button bar is drawn once and copied.
+- **Place markers** (the category highlight wish): `tools/vmap/build_vmap.py` `MARKERS` picks
+  OpenMapTiles poi points by class and subclass into 13 marker rules (layer kind 6, the pictogram
+  number in the layer record's last field): fuel, hospital, mall (shop=mall and department stores),
+  police from zoom 15; parking, clinic, supermarket (and marketplace), pharmacy, bank and ATM, car
+  repair and parts, hotel (hotel, motel, guest house, hostel) from 16; convenience store and food
+  (fast food, restaurant) from 17. Names beside them from zoom 16 for fuel, hospital, mall and
+  police (as the style named fuel stations), from 17 for the rest, in the badge colour (lighter on
+  the dark map). The style's fuel dot and fuel name are replaced. Counts in the Dasmarinas area
+  (zoom 14 data): fuel 179, parking 790, mall 33 plus 16 department stores, hospital 30 and clinic
+  70, police 56, pharmacy 115, bank 95 and ATM 82, supermarket 87 and marketplace 27, convenience
+  550, fast food 361 and restaurant 304, car repair 79 and parts 27, hotels and the like 47.
+  Drawing (`vmap.c`): a 26 px badge in the place's colour inside a 2 px ring in the land colour, the
+  16 x 16 pictogram (`dashboard/src/vicons.c`, drawn on the pixel grid, the user's icon rule) in
+  white, centred on a whole pixel so it stays sharp; upright at any bearing; placed with the labels
+  (after place names, before peaks and road names, by the poi rank), never overlapping; the name
+  only when it fits; kept with the labels while the map moves; dimmed with the night map.
+
+Fourth car run (`VMapTest.exe` 0.4, 2026-11-18, **Seen**): **no NEON**: the helper started with
+`--neon-check` ended with code `0xC000001D` (illegal instruction), so this Cortex-A9 has no NEON
+unit or the system does not enable it (the check took about 5 s; the main program carried on).
+NEON was then taken out again (0.5). Drawing a smooth turned frame into ordinary memory
+(`malloc`) took 51 ms against 35 ms into the 32-bit DIB section, so frames stay in the DIB
+section; copying either takes about 9 ms. With the bordered pictures and runs (no NEON): turned
+frames 15 to 17 ms Fast and 26 to 36 ms Smooth (41 to 50 in 0.3); spin at zoom 16 60 ms Smooth
+(16.5 a second), 40 ms Fast (24.5); drive heading up 52 to 55 ms Smooth (17.9 to 19.2 a second);
+drag north up 22 to 28 ms (35 to 44 a second). Place markers showed (7 to 9 at zoom 15 and 16 in
+the series' views). Zooming through several half levels quickly leaves up to 12 pictures missing
+for a moment (drawn from the zoom before until ready). Labels placed afresh at zoom 14 can take
+up to 57 ms (only when the map comes to rest).
+
+0.5 (**built and tested on the Mac only**): turned or scaled frames are composed in chunks of
+screen pixels (64 x 16 by default) instead of whole rows, so the picture rows a chunk crosses
+stay in the processor's cache from one screen row to the next (a whole turned row crosses
+hundreds of picture rows). The series times rows, 64 x 16, 32 x 32, 128 x 8 and 32 x 16 on the
+unit and keeps the quickest (on the Mac, whose caches are far larger, rows are slightly quicker).
+Widening 16-bit pixels to 32 bits goes through two tables of 256 entries (high and low byte)
+instead of eleven steps; the same result as `VR_565_TO_32`. Mac: a smooth turned frame 1.3 ms
+(1.6 to 1.8 before).
+
+More place markers (2026-11-18, the user: "add more markers"; they confirmed the first list, that
+markers win over road names in busy places, and the zoom levels, and found Smooth turning smooth
+enough): 16 more kinds, 29 marker rules and 28 pictograms in all. Toll booth from zoom 16 (in this
+data `toll_booth` also marks car park pay booths at the malls, so not from 15), campsite and picnic
+site from 15 (useful off-road); church (`place_of_worship`), school (school, kindergarten, college,
+university), town or barangay hall (`town_hall`, including community centres), attraction
+(attraction, viewpoint, museum, monument), bus station (not bus stops), fire station from 16;
+café, bakery, hardware (and DIY), motorcycle shop, post office, dentist, toilets, drinking water
+from 17. Names from 17 (toll and campsite from 16). Colours by family: transport blue, shopping
+teal (malls purple), food raspberry, health red (pharmacies green), money and post gold, cars
+slate, landmarks brown (so hotels moved from brown to violet), outdoors olive, water cyan.
+Dasmarinas counts: churches 245, schools 294 and colleges 40, halls 163, attractions about 46,
+toll booths 36, bus stations 27, fire stations 10, cafés 155, bakeries 104, hardware 129,
+motorcycle shops 77, post offices 19, dentists 43, toilets 182, drinking water 23, campsites and
+picnic sites about 16. `VM_MAX_LAYERS` went from 96 to 128 (the file has 85 rules).
+
+Still to do for a full map after that:
+Luzon data (zoom 8 to 14, about 70,000 tiles at zoom 14), label stability while moving, and the
+category highlight wish (a style rule here). The map in the dashboard and its map page, heading
+up with the GPS glide, came in dashboard 0.9 (next section).
+
+### Vector map in the dashboard (0.9, **built and tested on the Mac only**)
+
+The user's request (2026-11-18): replace the dashboard's picture map with the vector map, as the
+dashboard's background, following the heading; the map page lets a finger drag it; remember the
+zoom; no Luzon build yet (the pilot file covers Dasmarinas only). `dashboard/src/dash.c` opens the
+first readable `*.vmap` in `\SD\VMap\` (skipping `._` files), reads `fonts\Barlow-Medium.ttf` for the
+names, and draws with `vmap.c` and `vtiles.c`, the pilot's renderer unchanged. `map.c` is no longer
+compiled into the dashboard; `luzon.addr` is still read from `\SD\Map\`.
+
+- Heading up: after each model update, the map's view (position at the car and the direction up the
+  screen) glides from where it is shown to the newest GPS position and course over 1 s
+  (`GLIDE_MS`), the turn the short way round. The course is used only while the heading comes from
+  GPS (above 6 km/h, back below 4 km/h); with the car's 8-point compass the map keeps its last
+  turn, north up until the first GPS course. Changes smaller than 0.3 px and 0.5 degree are not
+  glided; below 2 km/h position changes under 4 px are ignored, so a parked car's wandering GPS
+  position does not keep the map moving. The car's arrow is drawn at the heading minus the map's
+  turn, so it points up once the glide ends.
+- Frames while the map moves come from the map pictures (`vt_compose`, Smooth turning) with the
+  kept labels (`VM_DRAW_LABELS_KEPT`), on a timer (`TIMER_ANIM`) every 100 ms at most; when a frame
+  takes longer, the timer moves out to 1.5 times its time (`glide_pace`), so a third of the time
+  stays for GPS, the bus and the address thread. At rest the map is drawn once in full
+  (`vmap_render`, labels placed afresh) and that picture is kept (3 MB) and reused by the 1 s
+  repaint until the view changes. Frames wait while the holiday notification moves.
+- Missing pictures are drawn on a 1 ms timer (`TIMER_MAPWORK`), one per message, nearest first:
+  the screen, a ring around it, half a zoom level in and out, then the other look (day or night)
+  for the switch at sunset or sunrise. Up to 400 pictures (52 MB; 348 MB were free on the unit)
+  or, without that much memory, 120; 128 decoded file tiles.
+- The back buffer is now a 32-bit top-down DIB section (the unit's screen is 32 bits per pixel;
+  in the pilot the copy of a 32-bit buffer took 9 ms against 40 ms for 16-bit), the panels are
+  tinted into it with `vr_tint` (the old `map_tint` for 32-bit pixels), and the holiday
+  notification's saved copy is 32-bit too.
+- Zoom: + and - move half a level (`MAP_ZOOM_STEP`) between the file's lowest data zoom (10 for the
+  pilot) and 19 (`MAP_TOP_ZOOM`). The dashboard's zoom is saved at each press as
+  `map_zoom_tenths=` in `dashboard-settings.txt` (beside the time zone) and used at the next
+  start (the user's request); without it the map starts at 16 (`MAP_DEFAULT_ZOOM`). The map
+  page's zoom is its own and not saved. The scale bar works at any zoom.
+- The compass (44 px, where the north-up mark was) turns with the map: the north half in the
+  graph colour, the south half muted, "N" 16 px out from the middle.
+- Messages: "No map file" ("Copy the VMap folder to the SD card") without a readable file, "No map
+  for this area" when the car is outside the file's box.
+
+Luzon file (2026-11-18, the user: "build entire luzon now", with the builder unchanged):
+`python3 tools/vmap/build_vmap.py --bounds 119.4,12.4,124.5,18.8 --name luzon` (the picture map's
+Luzon box, data zooms 10 to 14, vector tiles of 2026-11-13) wrote `dist/vmap/VMap/luzon.vmap` in
+6 min 55 s on one core of the M1 Pro: 227.2 MB (372.6 MB before compression), 94,180 tiles (320,
+1,140, 4,484, 17,782 and 70,454 per zoom). Header and tile index 1.12 MB (`vmap_open` allows 4
+MB); the largest tile 932 KB unpacked (Quezon City, 1,258 features; the reader allows 8 MB, the
+format 65,535 features), Dasmarinas's largest 604 KB; zoom 14 tiles average 3.9 KB. Checks on the
+Mac: Dasmarinas draws pixel for pixel the same from both files; at zoom 16 and 14, Manila, Quezon
+City and Baguio take about as long as Dasmarinas (6 to 9 ms and 13 to 16 ms, best of 3), the
+countryside and coast a fraction of that, so the car's Dasmarinas figures should hold in the
+cities; dashboard previews in Manila and Baguio show the map, markers and the address. Before the
+build a sample of 1,200 random tiles gave about 6 minutes and the data size about 10. Both the
+dashboard and `VMapTest.exe` open the first `*.vmap` the card's folder listing returns (the copy
+order on FAT, not the name), so `\SD\VMap` should hold one file; VMapTest centres its views on the
+middle of the file's box, which for Luzon is near the Aurora coast, so its series needs
+`dasmarinas.vmap` alone to compare with the earlier runs. Not run on the car yet.
+
+The 0.9.0 build imports the same 105 COREDLL functions as 0.8.0 (`objdump -p`), with no compiler
+warnings. Mac tests: `tests/test_dashboard.py` (the drawing calls: map view passed with position,
+zoom, turn and car point; scale bar at fractional zooms; the map page's drag at a turn, frozen turn,
+car on the dragged view, box limit; "No map file") and
+`tests/test_vmap.py` `DashboardMapTests` (the dashboard preview with the real Dasmarinas file,
+heading up, by day and night). Log: at start `[map] vector map: N rules, M data zooms, zoom A to
+B, showing Z (remembered); P pictures at most`; every 10 minutes `[map] zoom Z | moving: frames,
+average and slowest ms; at rest: sharp drawings, average and slowest ms | pictures drawn and kept |
+map page opened, slowest frame while dragging`. No position. Not known yet: the frame times on
+the car while driving (the pilot's Drive series gave 52 to 55 ms Smooth at zoom 16, without the
+panels and the GDI text), how often a glide finds pictures missing at 1 frame per GPS update, and
+whether the glide looks smooth at 10 frames a second.
 
 ### Address (dashboard 0.3, **built and tested on the Mac only**)
 
@@ -717,11 +1277,95 @@ name within 50 m: motorways and trunk roads over 98%, primary 97%, secondary 83%
 residential 32%, unclassified 10%, tracks 3%; a named place within 3 km 97% (89% on tracks).
 Missing names and outlines can be added in OpenStreetMap; they appear after the next build.
 
+### Holiday notification (dashboard 0.8, **built and tested on the Mac only**)
+
+The user's request (2026-11-18): at start-up, when today is a national holiday, show it like a
+phone's "island" notification (icon, name, long date, a note when it is a non-working day); once
+GPS gives the location, add the regional one; after a few seconds collapse into a small round
+button on the left, like the north mark on the right, with the holiday icon in red, shown only on a
+holiday; tapping it shows the notification again; showing and hiding animated. All holidays are
+listed, working ones too, with a "DAY OFF" badge on regular holidays and special non-working days.
+Regional means the Luzon regions only (NCR, CAR, I, II, III, IV-A, MIMAROPA, V). The user's rule
+(2026-11-18): the regional part must not depend on the map or the address file (the map will be
+replaced); it works from coordinates alone.
+
+Data (`tools/holidays/`, built into `dashboard/holidays.txt`, copied next to the exe):
+- National: Proclamation No. 1006 (2026, signed 2025-09-03), Eid'l Fitr No. 1189 (2026-03-20),
+  Eid'l Adha No. 1264 (2026-05-27), and No. 1427 for 2027 (signed 2026-09-08; its Lawphil copy lacks
+  the "additional special non-working days" heading, the press office's release lists Chinese New
+  Year, Black Saturday, All Souls' Day and Christmas Eve as non-working). The 2027 Eid dates are
+  proclaimed later (expected around 10 March and 16 May 2027), then go into `national.tsv`.
+- Local, 2026: 219 proclamations for Luzon places (Nos. 1109 to 1515), read one by one from the
+  proclamation texts on lawphil.net on 2026-11-18, with the reason from the text. Two are special
+  election days (Antipolo's 2nd district, 14 March; Cavite's 4th district (Dasmariñas), 29 August).
+  Proclamations after No. 1515 (most December dates) were not published yet.
+- By law, every year: 11 nationwide special working holidays (for example National Women's Day
+  8 March, Quezon Day 19 August, Graciano Lopez-Jaena Day 18 December) and 104 local days (63
+  non-working, 41 working)
+  (Republic Act titles from the Lawphil indexes; RA 12099, 9210 and 7552 read in full). Laws that
+  later laws repealed or replaced are left out (listed at the top of `laws.tsv`). In a year that
+  has proclamations (2026), a law's date is left out where a proclamation holds a day for the same
+  place within a week, since the proclamation moved or replaced it (Occidental Mindoro 15 November
+  moved to Monday 16 November 2026; Dasmariñas 26 November is a working holiday by law and a day off
+  by Proclamation 1507).
+- Towns: every Luzon city and municipality (771, matching PSA's counts per province) with its
+  centre and land area from Wikidata (CC0), `tools/holidays/fetch_towns.py`, run 2026-11-18. Fixes:
+  the highly urbanised cities sit under their region on Wikidata and are put back in their province
+  (Baguio, Angeles, Olongapo, Lucena, Puerto Princesa), dissolved towns are dropped.
+- The list: 475 holidays (62 national, 413 local; 22 regular, 359 special non-working, 94 working)
+  for 2026-01-01 to 2027-12-31, 54 KB. Outside those dates nothing is shown and the log says so.
+
+Where the car is (`holiday_locate` in `dashboard/src/holiday.c`, the same rule as `locate()` in
+`build_holidays.py`): the town whose centre is nearest the GPS position, each distance divided by
+the town's radius (the radius of a circle of its land area), so a large municipality reaches
+further than a small one; none when even that town is more than 3 radii away (at sea, outside
+Luzon). It is a nearest-centre estimate, not the real boundary: near a town line the neighbour can
+be picked. Whole numbers and doubles in a fixed order make the C reader give exactly the Python
+reference's answers (checked on every town centre and 3,000 random points). A local holiday applies
+when its places hold that town or its province. The same name at several levels (Quezon Day: a
+working day nationwide, a day off in Quezon City) is shown once, at the most specific level. At most
+3 rows: national first, then the province's, then the town's. The town is looked up again after
+about 110 m (at most every 10 s), on the UI thread (771 towns, a few thousand soft-float
+operations).
+
+Behaviour (`dash.c`, movement in `island.c`, drawing in `render_island`): once the date is known,
+each second the dashboard works out today's rows; a row not shown yet today opens the notification
+(at once on the dashboard page with the window visible and the menu closed, otherwise when it is
+next in front). It grows out of the round button (a slight bounce, 0.42 s), the text fades in, it
+stays 6 s, the text fades out and it shrinks back into the button (0.45 s). A new row while open
+makes it taller; when no holiday applies any more the button goes. Tapping the button opens it
+again, tapping the open panel closes it, and leaving the dashboard page, opening the menu or the
+window being hidden turns an open panel back into the button at once. The button sits at the top
+left of the map (x 153, y 48, 44 px), the north mark's place mirrored; the panel is 380 px wide at
+the top middle of the map, 72 px a row, nearly solid (248 of 256) so nothing shows through its text.
+Each row: the red calendar icon, the name, the long date ("Thursday, November 26, 2026"), and the
+note ("Regular holiday", "Special non-working day", "Special working day", "Non-working day in
+Lucban", "Working holiday in San Juan") after a red "DAY OFF" badge on days off.
+
+Speed on the unit: a full repaint (map composition, panels, the 800 x 480 copy that alone took about
+40 ms in the vector map test) is too slow for a smooth movement. So after each full repaint of the
+dashboard the program keeps a copy of the screen under the notification's area (460 x 240 pixels,
+221 KB), and while it moves a 15 ms timer asks for frames that put back only the part the previous
+frame covered, draw the new frame there and copy only that part to the screen. The 1 s repaint waits
+while it moves (half a second at most). Without the back buffer (16-bit until 0.8, 32-bit since
+0.9) each frame is a full repaint.
+The import table is identical to 0.7.0's (`objdump -p`). Not known yet: how fast these frames are on
+the unit; the 10-minute log line `[holidays] notification: N frames drawn alone, slowest X ms` tells.
+
+Log (`dashboard-log.txt`): the list loaded (`[holidays] 475 holidays, 39 provinces, 771 towns, for
+...`), and once a day the national holidays (`[holidays] 2026-11-30: Bonifacio Day (regular
+holiday)`). The town and the local holidays are never logged: they are as revealing as the position.
+
+Updating: edit `tools/holidays/national.tsv`, `local-2026.tsv` (2027's proclamations go into a new
+`local-2027.tsv` of the same form; every `local-*.tsv` is read) or `laws.tsv`, run
+`python3 tools/holidays/build_holidays.py`, rebuild the dashboard. `tests/test_holidays.py` checks
+that `holidays.txt` is up to date and compares the C reader with the reference.
+
 ## The probe
 
 `probe/` is a small Windows CE program (C, built with CeGCC in Docker: `tools/build_probe.sh`). It
 runs from `\SD\Probe\Probe.exe`, started from Total Commander, and appends everything to
-`probe-log.txt` next to itself. See `probe/README.txt` for the on-car steps. Version 0.4 buttons
+`probe-log.txt` next to itself. See `probe/README.txt` for the on-car steps. Version 0.5 buttons
 (starting `Probe.exe` while it already runs brings the running copy to the front):
 
 1. **Survey** (read-only): OS version, screen size, every top-level window, `HKLM\Drivers\Active`
@@ -740,17 +1384,27 @@ runs from `\SD\Probe\Probe.exe`, started from Total Commander, and appends every
 4. **Ports**: opens each COM port from the driver list read-only, except COM2, COM3 and COM5.
    For NMEA ports it logs only which sentence types appear; for anything else a hex sample.
 5. **Next step**: a guided test that writes a numbered marker into the log, so unknown messages
-   can be matched to actions. Version 0.4 steps: parking lights, headlights, hazards, reverse (foot
-   on the brake), parking brake, and changing the fan from the home screen. Survey also lists
-   network adapters (`HKLM\Comm\*\Parms\TcpIp`) for the USB tethering test.
+   can be matched to actions. Version 0.5 steps: parking lights, headlights, hazards, reverse (foot
+   on the brake), parking brake, driver's seatbelt, driver's door, the other three doors and the
+   tailgate one at a time, the key from ACC to ON to engine start (cars with a key only), and
+   finally 10 minutes of running for values that are sent only rarely. The fan steps of 0.4 are
+   gone (climate is not wanted). Survey also lists network adapters (`HKLM\Comm\*\Parms\TcpIp`) for
+   the USB tethering test.
 6. **Exit**: logs a summary and quits.
 
 Always on: logs when `Main.exe`'s `AirControlBar` climate popup is shown or hidden and saves up to
-12 screenshots of it as `aircontrol_NN.bmp`.
+12 screenshots of it as `aircontrol_NN.bmp`; reads the fan level from `Main.exe`'s memory (see
+"Climate"); and (0.5) maps the system status table `SkSysInfoShareMem` read-only, logs all 62
+values at start and at exit and every change in between, checked every 200 ms (`[sysinfo]`
+lines; layout in "The message bus"). It opens the block itself with `CreateFileMappingW` (size 0,
+which only opens an existing block) and `MapViewOfFile` (`FILE_MAP_READ`), both looked up at run
+time, so no `SkShareMem.dll` code runs in the probe. When `SkShareMem.dll` is not the analysed
+147,456-byte build it logs changed bytes by offset only. Probe 0.5 imports exactly the same
+functions as 0.4.
 
-The ring reader and bundle parser (`probe/src/busring.c`) and NMEA parser (`probe/src/nmea.c`)
-are tested on the build machine by `tests/test_probe_selftest.py`, partly with messages copied
-from the car. The probe checks two export offsets of `SkCom.dll` before using its internal
+The ring reader and bundle parser (`probe/src/busring.c`), NMEA parser (`probe/src/nmea.c`) and
+status table reader (`probe/src/sysinfo.c`) are tested on the build machine by
+`tests/test_probe_selftest.py`, partly with messages copied from the car. The probe checks two export offsets of `SkCom.dll` before using its internal
 shared-memory pointer and refuses to start on another build.
 
 ## Probe run 1 (probe 0.1)
@@ -811,23 +1465,32 @@ shared-memory pointer and refuses to start on another build.
 
 ## Next steps
 
-1. Run probe 0.4 (`probe/README.txt`): lights, hazards, reverse, parking brake and the USB
-   tethering test. The fan steps (7 and 8) can be skipped. Bring back `probe-log.txt`.
-2. From the log: the meaning of the `0x33` bits and of `0x52A`, and whether a USB network adapter
-   appears.
+1. Run probe 0.5 (`probe/README.txt`; it replaces 0.4): lights, hazards, reverse, parking brake,
+   seatbelt, doors and tailgate, key positions, 10 minutes of running, and the USB tethering
+   test. Bring back `probe-log.txt`.
+2. From the log: the meaning of the `0x33` bits and of `0x52A`; which `[sysinfo]` and
+   `[devstatus]` values move with each step (which bit is the parking brake, and whether anything
+   at all moves for the doors, seatbelt or key); whether a USB network adapter appears.
 3. For pitch, roll and yaw rate: if USB networking works, a phone over USB tethering is the
    no-purchase route. For real steering angle, RPM and coolant: a small USB-network sensor board
    (CAN for steering angle and yaw rate, OBD-II requests for RPM and coolant).
 4. Run dashboard 0.1.0 (`dashboard/README.txt`) and bring back `dashboard-log.txt`.
-5. Bluetooth device switching: copy `\NandFlash\Application\Bluetooth\` and the three
-   `Bluetooth*Res` files to the SD card with Total Commander (copy, never move; do not copy
-   `\backup\bt_sc.db`, it holds link keys), to find out whether `Bluetooth.exe` accepts a connect
-   request and where it keeps the paired list. For the status panel, log `0x475`, `0x52A` wParam 0
+5. Bluetooth device switching: `\NandFlash\Application\Bluetooth\` is copied (2026-11-18; no
+   network profile, see "Bluetooth"); still to do: find in it whether `Bluetooth.exe` accepts a
+   connect request and where it keeps the paired list (`HKLM\Software\CSR\Bluetooth\Device` is a
+   candidate), and copy the three `Bluetooth*Res` files (copy, never move; do not copy
+   `\backup\bt_sc.db`, it holds link keys). For the status panel, log `0x475`, `0x52A` wParam 0
    and setup string `0x40F` while connecting, disconnecting and switching phones in the factory
    screen.
 6. Media: run the probe's bus logging while Bluetooth music plays, and press next, previous and
    pause on the steering wheel and on the InfoBar. The log should show `0x4AB` (key and state, to
    the Bluetooth app) and `0x4A0` with the song fields.
+7. Vector map pilot: run `VMapTest.exe` 0.5 (replace `\SD\VMapTest`; `\SD\VMap` stays), let the
+   series finish, then drag, turn and press Drive in Smooth; bring back
+   `VMapTest\vmaptest-log.txt` (the `[chunks]` line says which chunk size the unit likes).
+8. Dashboard 0.9.0 (`dashboard/README.txt`): copy `Navigation`, and `luzon.vmap` alone into
+   `\SD\VMap`, drive with the map (Dasmarinas and a city compare with the pilot's figures), change the zoom and restart once (it should come back), try the map
+   page's drag; bring back `dashboard-log.txt` (the `[map]` lines give the frame times).
 
 ## Reproducing this analysis
 

@@ -3,7 +3,7 @@
 Writes small packs with tools/map/mtpack.py (RGB, palette, shared, corrupt and missing tiles),
 then runs tests/c/map_selftest.c against them: decoding, exact pixel placement across tile
 borders, background and outside colours, night dimming, the tile cache and bottom-up bitmaps.
-Also renders the dashboard previews with a map, through the same composing code.
+(The dashboard draws the vector map since 0.9; its previews with a map are in tests/test_vmap.py.)
 """
 from __future__ import annotations
 
@@ -24,9 +24,6 @@ FLAGS = ["-std=c99", "-Wall", "-Wextra", "-Wno-unused-parameter", "-Werror",
          "-I", str(ROOT / "dashboard/src"), "-I", str(ROOT / "probe/src")]
 MAP_SOURCES = ["dashboard/src/map.c", "dashboard/src/pngdec.c"]
 ADDR_SOURCES = ["dashboard/src/addr.c"]
-DASH_SOURCES = ["dashboard/src/model.c", "dashboard/src/render.c", "dashboard/src/sun.c",
-                "probe/src/nmea.c", "probe/src/carinfo.c"]
-
 A, B, C, D, E, F = 0xC82828, 0x00C800, 0x0000C8, 0xF0F010, 0xC8C8C8, 0x640064
 
 
@@ -105,34 +102,6 @@ class MapReaderTests(unittest.TestCase):
             compile_c("tests/c/map_selftest.c", MAP_SOURCES, binary)
             result = subprocess.run([str(binary)] + [str(p) for p in packs], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-
-    def test_preview_with_map(self):
-        with tempfile.TemporaryDirectory() as temp:
-            maps = Path(temp) / "Map"
-            maps.mkdir()
-            # zoom 14 tiles around 46 N 7.5 E, the preview's demo position: tile 8533, 5828
-            with mtpack.PackWriter(maps / "z14.pack", 14, 8530, 5825, 7, 7, background=0x223344) as w:
-                for x in range(8530, 8537):
-                    for y in range(5825, 5832):
-                        w.add(x, y, mtpack.solid_png(0x405060 if (x + y) % 2 else 0x506070))
-            out = Path(temp) / "previews"
-            out.mkdir()
-            binary = Path(temp) / "dashboard_preview"
-            compile_c("tests/c/dashboard_preview.c", DASH_SOURCES + MAP_SOURCES + ADDR_SOURCES, binary)
-            result = subprocess.run([str(binary), str(ROOT / "dashboard/fonts"), str(out), str(maps)],
-                                    capture_output=True, text=True)
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            svg = "{http://www.w3.org/2000/svg}"
-            for name, has_map in (("driving.svg", True), ("no-gps.svg", True), ("startup.svg", False)):
-                root = ET.parse(out / name).getroot()
-                images = [i for i in root.iter(svg + "image")]
-                texts = " ".join(t.text or "" for t in root.iter(svg + "text"))
-                self.assertEqual(len(images) == 1, has_map, name)
-                if has_map:
-                    self.assertTrue(images[0].get("href").startswith("data:image/png;base64,"))
-                    self.assertIn("OpenStreetMap", texts)
-                else:
-                    self.assertIn("Waiting for GPS", texts)
 
 
 if __name__ == "__main__":

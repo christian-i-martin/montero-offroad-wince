@@ -3,12 +3,15 @@
  * Usage: dashboard_preview FONT_DIR OUT_DIR [MAP_DIR [LAT LON]]
  * Writes driving.svg, parked-night.svg, no-gps.svg, startup.svg, menu.svg, and the car info page
  * as carinfo.svg (General, day), carinfo-size.svg (Size and clearance, day) and carinfo-night.svg
- * (Fluids, night); the fonts are embedded
- * so any SVG viewer shows the real typeface. With MAP_DIR (a folder of *.pack files, light ones for
- * the day in its Day folder) the map is composed by map.c exactly as on the head unit and embedded
- * as a PNG picture under the semi-transparent panels, and an *.addr file
- * there gives the address through addr.c; LAT LON move the demo drive there (default 46 N 7.5 E,
- * a made-up place). */
+ * (Fluids, night), and the map page as mappage.svg (following the car, day) and mappage-night.svg
+ * (dragged away from the car, night), and the holiday notification as holiday.svg (open, two rows,
+ * day), holiday-opening.svg (growing, at its widest), holiday-dot.svg (collapsed into its button)
+ * and holiday-night.svg (three rows, night); the fonts are embedded
+ * so any SVG viewer shows the real typeface. With MAP_DIR (a folder holding a vector map, *.vmap)
+ * the map is drawn by vmap.c as on the head unit (turned to the car's heading, with its names and
+ * place markers) and embedded as a PNG picture under the semi-transparent panels, and an *.addr
+ * file there gives the address through addr.c; LAT LON move the demo drive there (default 46 N
+ * 7.5 E, a made-up place). */
 #include <dirent.h>
 #include <math.h>
 #include <stdio.h>
@@ -16,9 +19,10 @@
 #include <string.h>
 
 #include "addr.h"
-#include "map.h"
 #include "model.h"
 #include "render.h"
+#include "vfont.h"
+#include "vmap.h"
 
 /* ---------------------------------------------------------------- TrueType advance widths */
 
@@ -201,7 +205,10 @@ static void svg_text(void *ctx, int x, int baseline, int font, unsigned rgb, con
 
 /* ---------------------------------------------------------------- map picture as PNG */
 
-static MapSet g_map;
+static VMap g_vmap;
+static VFont g_vfont;
+static unsigned char *g_vfont_data;
+static int g_vmap_ok;
 static AddrFile g_addr;
 static int g_addr_ok;
 static double g_lat = 46.0, g_lon = 7.5;
@@ -284,16 +291,33 @@ static unsigned char *png_from_565(const unsigned short *px, int w, int h, long 
 
 static void base64(FILE *out, const unsigned char *d, long n);
 
-static int svg_map(void *ctx, int x, int y, int w, int h, int zoom, double px, double py, int night)
+static int svg_map(void *ctx, int x, int y, int w, int h, double mx, double my, double zoom, double bearing, int cx,
+                   int cy, int night)
 {
     static unsigned short pixels[SCREEN_W * SCREEN_H];
     unsigned char *png;
     long size;
     int result;
-    if (g_map.count == 0 || w > SCREEN_W || h > SCREEN_H)
-        return MAP_NO_FILES;
-    map_use_style(&g_map, night ? MAP_DARK : MAP_LIGHT); /* as dash.c does when the colours change */
-    result = map_compose(&g_map, pixels, w, h, w, zoom, px, py, night);
+    VSurface s;
+    VMapView v;
+    if (!g_vmap_ok || w > SCREEN_W || h > SCREEN_H)
+        return MAPDRAW_NO_FILES;
+    memset(&s, 0, sizeof s);
+    s.px = pixels;
+    s.w = w;
+    s.h = h;
+    s.stride = w;
+    memset(&v, 0, sizeof v);
+    v.mx = mx;
+    v.my = my;
+    v.zoom = zoom;
+    v.bearing = bearing;
+    v.style = night ? 0 : 1; /* as dash.c: the dark map at half brightness at night, the light one by day */
+    v.dim = night;
+    v.cx = cx - x;
+    v.cy = cy - y;
+    v.labels = 1;
+    result = vmap_render(&g_vmap, &s, &v, NULL) ? MAPDRAW_SHOWN : MAPDRAW_OUTSIDE;
     png = png_from_565(pixels, w, h, &size);
     fprintf(g_out, "<image x=\"%d\" y=\"%d\" width=\"%d\" height=\"%d\" href=\"data:image/png;base64,", x, y, w, h);
     base64(g_out, png, size);
@@ -309,7 +333,9 @@ static int file_read_at(void *file, unsigned offset, void *buffer, unsigned size
     return (int)fread(buffer, 1, size, (FILE *)file);
 }
 
-static int open_maps(const char *dir, int style)
+/* The vector map (the first *.vmap) and the address file (*.addr) in dir; font_dir has the
+ * labels' font. */
+static int open_maps(const char *dir, const char *font_dir)
 {
     DIR *d = opendir(dir);
     struct dirent *e;
@@ -319,23 +345,37 @@ static int open_maps(const char *dir, int style)
     while ((e = readdir(d)) != NULL) {
         size_t n = strlen(e->d_name);
         FILE *f;
-        if (n > 5 && strcmp(e->d_name + n - 5, ".addr") == 0 && !g_addr_ok) {
-            snprintf(path, sizeof path, "%s/%s", dir, e->d_name);
-            f = fopen(path, "rb");
-            g_addr_ok = f && addr_open(&g_addr, f, file_read_at);
-            continue;
-        }
-        if (n < 6 || strcmp(e->d_name + n - 5, ".pack") != 0)
+        if (e->d_name[0] == '.')
             continue;
         snprintf(path, sizeof path, "%s/%s", dir, e->d_name);
-        f = fopen(path, "rb");
-        if (f && !map_add_pack_style(&g_map, f, file_read_at, style)) {
-            fprintf(stderr, "not a map pack: %s\n", path);
-            fclose(f);
+        if (n > 5 && strcmp(e->d_name + n - 5, ".addr") == 0 && !g_addr_ok) {
+            f = fopen(path, "rb");
+            g_addr_ok = f && addr_open(&g_addr, f, file_read_at);
+        } else if (n > 5 && strcmp(e->d_name + n - 5, ".vmap") == 0 && !g_vmap_ok) {
+            f = fopen(path, "rb");
+            g_vmap_ok = f && vmap_open(&g_vmap, f, file_read_at, 128);
+            if (!g_vmap_ok)
+                fprintf(stderr, "not a vector map: %s\n", path);
         }
     }
     closedir(d);
-    return g_map.count;
+    if (g_vmap_ok) {
+        FILE *f;
+        long size;
+        snprintf(path, sizeof path, "%s/Barlow-Medium.ttf", font_dir);
+        f = fopen(path, "rb");
+        if (f) {
+            fseek(f, 0, SEEK_END);
+            size = ftell(f);
+            fseek(f, 0, SEEK_SET);
+            g_vfont_data = (unsigned char *)malloc((size_t)size);
+            if (g_vfont_data && fread(g_vfont_data, 1, (size_t)size, f) == (size_t)size &&
+                vf_load(&g_vfont, g_vfont_data, (unsigned)size))
+                vmap_set_font(&g_vmap, &g_vfont);
+            fclose(f);
+        }
+    }
+    return g_vmap_ok;
 }
 
 /* The program sets the map view and the address after dash_init: as dash.c does. */
@@ -356,12 +396,15 @@ static void set_map_view(DashModel *m)
             m->addr_place_m = r.place_m;
         }
     }
-    if (g_map.count == 0)
+    if (!g_vmap_ok)
         return;
-    map_use_style(&g_map, m->night ? MAP_DARK : MAP_LIGHT);
-    m->map_min_zoom = g_map.min_zoom;
-    m->map_max_zoom = g_map.max_zoom;
-    m->map_zoom = g_map.max_zoom; /* the map starts at the highest zoom level the files hold */
+    vmap_zoom_range(&g_vmap, &m->map_min_zoom, &m->map_max_zoom);
+    if (m->map_max_zoom > 19)
+        m->map_max_zoom = 19;
+    m->map_zoom = MAP_DEFAULT_ZOOM;
+    /* as dash.c at rest: the car's position, its heading up (north up before any GPS heading) */
+    vmap_mercator(m->lat, m->lon, &m->map_mx, &m->map_my);
+    m->map_bearing = m->heading_src == SRC_GPS ? m->heading_deg : 0.0;
 }
 
 static const Canvas g_svg = {NULL, svg_fill, svg_round, svg_polyline, svg_polygon, svg_circle, svg_width, svg_text,
@@ -380,7 +423,10 @@ static void base64(FILE *out, const unsigned char *d, long n)
     }
 }
 
-enum { PAGE_DASHBOARD, PAGE_MENU, PAGE_CARINFO, PAGE_CARINFO_SIZE, PAGE_CARINFO_FLUIDS };
+enum { PAGE_DASHBOARD, PAGE_MENU, PAGE_MAP, PAGE_CARINFO, PAGE_CARINFO_SIZE, PAGE_CARINFO_FLUIDS };
+static MapView g_view; /* the map page's view, for PAGE_MAP */
+static Island g_island; /* the holiday notification, drawn over the dashboard when g_island_at is set */
+static unsigned g_island_at;
 
 static int write_svg(const char *dir, const char *name, const DashModel *m, int page)
 {
@@ -400,8 +446,15 @@ static int write_svg(const char *dir, const char *name, const DashModel *m, int 
     fprintf(g_out, "</style>\n");
     if (page >= PAGE_CARINFO) {
         render_carinfo(&g_svg, m, page - PAGE_CARINFO);
+    } else if (page == PAGE_MAP) {
+        render_mappage(&g_svg, m, &g_view);
     } else {
         render_dashboard(&g_svg, m);
+        if (g_island_at) {
+            IslandFrame f;
+            island_frame(&g_island, g_island_at, &f);
+            render_island(&g_svg, m, &f);
+        }
         if (page == PAGE_MENU)
             render_menu(&g_svg, m, 1, "0.1.0");
     }
@@ -411,6 +464,16 @@ static int write_svg(const char *dir, const char *name, const DashModel *m, int 
 }
 
 /* ---------------------------------------------------------------- scenes */
+
+/* Adds a row to the model's holidays (local when place is not empty). */
+static void holiday_row(DashModel *m, const char *name, int kind, const char *place)
+{
+    HolidayRow *r = &m->holidays[m->holiday_count++];
+    snprintf(r->name, sizeof r->name, "%s", name);
+    snprintf(r->place, sizeof r->place, "%s", place);
+    r->kind = kind;
+    r->local = place[0] != 0;
+}
 
 enum { SCENE_DRIVING, SCENE_PARKED_NIGHT, SCENE_NO_GPS };
 
@@ -491,17 +554,9 @@ int main(int argc, char **argv)
         fprintf(stderr, "usage: %s FONT_DIR OUT_DIR [MAP_DIR [LAT LON]]\n", argv[0]);
         return 2;
     }
-    if (!map_init(&g_map, 20))
+    if (argc >= 4 && !open_maps(argv[3], argv[1])) {
+        fprintf(stderr, "no vector map in %s\n", argv[3]);
         return 1;
-    if (argc >= 4) {
-        char day[1024];
-        snprintf(day, sizeof day, "%s/Day", argv[3]);
-        open_maps(argv[3], MAP_DARK);
-        open_maps(day, MAP_LIGHT); /* the light map for the day, when there is one */
-        if (g_map.count == 0) {
-            fprintf(stderr, "no map packs in %s\n", argv[3]);
-            return 1;
-        }
     }
     if (argc == 6) {
         g_lat = atof(argv[4]);
@@ -519,9 +574,16 @@ int main(int argc, char **argv)
         !write_svg(argv[2], "carinfo.svg", &m, PAGE_CARINFO) ||
         !write_svg(argv[2], "carinfo-size.svg", &m, PAGE_CARINFO_SIZE))
         return 1;
+    mapview_open(&g_view, m.map_zoom, 0); /* the map page as it opens: following the car */
+    write_svg(argv[2], "mappage.svg", &m, PAGE_MAP);
     simulate(&m, SCENE_PARKED_NIGHT);
     write_svg(argv[2], "parked-night.svg", &m, PAGE_DASHBOARD);
     write_svg(argv[2], "carinfo-night.svg", &m, PAGE_CARINFO_FLUIDS);
+    mapview_open(&g_view, m.map_zoom, 0); /* dragged to the left and up: the car is off the middle */
+    mapview_press(&g_view, &m, 500, 300, 0);
+    mapview_move(&g_view, 320, 380, NULL, 100);
+    mapview_release(&g_view, 200);
+    write_svg(argv[2], "mappage-night.svg", &m, PAGE_MAP);
     simulate(&m, SCENE_NO_GPS);
     m.gps_wait |= 1; /* the blinking GPS icon in its shown second */
     write_svg(argv[2], "no-gps.svg", &m, PAGE_DASHBOARD);
@@ -529,6 +591,37 @@ int main(int argc, char **argv)
     set_map_view(&m);
     m.gps_wait = 1;
     write_svg(argv[2], "startup.svg", &m, PAGE_DASHBOARD);
-    printf("wrote 8 previews to %s\n", argv[2]);
+
+    /* The holiday notification: open with a national and a local holiday (day), the moment its
+     * bounce is largest, and the button it collapses into; three rows at night. */
+    simulate(&m, SCENE_DRIVING);
+    m.month = 3;
+    m.day = 20;
+    holiday_row(&m, "Eid'l Fitr", HOLIDAY_REGULAR, "");
+    holiday_row(&m, "Founding anniversary", HOLIDAY_SPECIAL, "San Fernando");
+    island_init(&g_island);
+    island_set_rows(&g_island, m.holiday_count, 1000);
+    island_open(&g_island, 1000);
+    g_island_at = 3000;
+    write_svg(argv[2], "holiday.svg", &m, PAGE_DASHBOARD);
+    g_island_at = 1000 + 210; /* about where the panel is widest */
+    write_svg(argv[2], "holiday-opening.svg", &m, PAGE_DASHBOARD);
+    island_step(&g_island, 1000 + 500 + ISLAND_HOLD_MS); /* closes by itself */
+    g_island_at = 1000 + 2000 + ISLAND_HOLD_MS;
+    island_step(&g_island, g_island_at);
+    write_svg(argv[2], "holiday-dot.svg", &m, PAGE_DASHBOARD);
+    simulate(&m, SCENE_PARKED_NIGHT);
+    m.month = 8;
+    m.day = 19;
+    holiday_row(&m, "Quezon Day", HOLIDAY_WORKING, "");
+    holiday_row(&m, "Death anniversary of Doña Aurora Aragon Quezon and a long name", HOLIDAY_WORKING, "Aurora");
+    holiday_row(&m, "Founding anniversary", HOLIDAY_SPECIAL, "Dasmariñas");
+    island_init(&g_island);
+    island_set_rows(&g_island, m.holiday_count, 1000);
+    island_open(&g_island, 1000);
+    g_island_at = 3000;
+    write_svg(argv[2], "holiday-night.svg", &m, PAGE_DASHBOARD);
+    g_island_at = 0;
+    printf("wrote 14 previews to %s\n", argv[2]);
     return 0;
 }

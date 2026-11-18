@@ -1,4 +1,4 @@
-MONTERO PROBE 0.4 (data discovery, not the dashboard)
+MONTERO PROBE 0.5 (data discovery, not the dashboard)
 
 Install
   Copy this Probe folder to the SD card root, replacing the old one:
@@ -16,12 +16,23 @@ Start
     4 hazard lights on 5 s, then off
     5 foot firmly on the brake: shift to R, wait 5 s, back to P
     6 foot on the brake: release the parking brake 5 s, apply it again
-    7 stay on the probe screen: A/C fan up 3 steps, then down 3 steps,
-      about 3 s apart (watch "Fan n/8" at the top of the screen)
-    8 press the head unit's HOME button, change the A/C fan 3 steps,
-      wait 10 s, press NAV, then start Probe.exe again in Total Commander
-      (it brings the running probe back; it does not start a second one)
-    9 done
+    7 driver's seatbelt: unbuckle 5 s, then buckle again
+    8 driver's door: open 5 s, then close
+    9 get out and open, one at a time and 5 s each, then close: front
+      passenger door, rear left door, rear right door, then the tailgate.
+      Get back in and buckle up.
+   10 only if the car has a key (skip it with a start button): turn the
+      key back to ACC so the engine stops and the head unit stays on, wait
+      10 s, key to ON (dashboard lights on, engine off), wait 10 s, then
+      start the engine. If the head unit restarts while the engine starts,
+      that is fine: the log is saved line by line. Start the probe again
+      and press Bus (no need for Next step), then do step 11.
+   11 done: if you can, leave the probe running for 10 minutes with the
+      engine on before pressing Exit (slow values such as a fuel level
+      may only be sent every few minutes)
+  If you leave the probe with HOME, press NAV and start Probe.exe again in
+  Total Commander: it brings the running probe back, it does not start a
+  second one.
 
 Optional: USB network test (needs an Android phone and its USB cable)
   With the probe still running, plug the phone into the head unit's USB
@@ -34,5 +45,7 @@ Exit
 Afterwards
   Copy probe-log.txt and any aircontrol_NN.bmp files from \SD\Probe back to
   the computer. The .bmp files are screenshots of the climate popup.
+  The log also holds Main.exe's status table (lines starting [sysinfo]),
+  read without changing it.
   If the probe or the head unit misbehaves, restart the head unit normally;
   the probe changes nothing on the unit.

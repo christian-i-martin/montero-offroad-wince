@@ -28,23 +28,43 @@ The repository root mirrors the SD card root, plus reference material:
   byte-identical to the `Bin/` copies).
 - `tools/prepare_total_commander.py`: builds `dist/total-commander-direct/` (gitignored).
 - `probe/`: the on-car data-discovery program (C for Windows CE). `src/carinfo.c` (CarInfo frame
-  decoder), `src/busring.c` (shared-memory bus reader) and `src/nmea.c` (GPS) are portable C,
-  also compiled on the Mac by `tests/test_carinfo_decode.py` and `tests/test_probe_selftest.py`.
-  `src/probe.c` is the Windows CE program. The dashboard reuses these three files.
+  decoder), `src/busring.c` (shared-memory bus reader), `src/nmea.c` (GPS) and `src/sysinfo.c`
+  (layout of `Main.exe`'s system status table) are portable C, also compiled on the Mac by
+  `tests/test_carinfo_decode.py` and `tests/test_probe_selftest.py`. `src/probe.c` is the Windows
+  CE program. The dashboard reuses the first three files.
 - `dashboard/`: the dashboard (the future `Navigation.exe`). `src/model.c` (what is shown: GPS-first
   elevation and heading with car fallbacks, speeds, histories, trends, day and night colours from
   the sun), `src/render.c` (the 800 x 480 layout: the map across the whole screen under
   semi-transparent panels, pixel-grid icons, line graphs, and the car info page behind the
-  header's car button, with a side bar of categories (General, Size and clearance, Fluids); drawn through a small `Canvas` interface) and `src/sun.c` (sunset) are portable C; `src/dash.c` is the Windows CE program (GDI
-  drawing into a 16-bit DIB back buffer, GPS thread, bus client copied from the probe). `fonts/`
+  header's car button, with a side bar of categories (General, Size and clearance, Fluids), and
+  the map page behind a tap on the car: the map alone, dragged with a finger; drawn through a
+  small `Canvas` interface), `src/mapview.c` (the map page's view: following the car, dragging,
+  its own zoom, following again after 30 s) and `src/sun.c` (sunset) are portable C;
+  `src/dash.c` is the Windows CE program (GDI drawing into a 32-bit DIB back buffer, GPS thread,
+  bus client copied from the probe; since 0.9 the map is the vector map from `\SD\VMap\` (below),
+  turned with the GPS course up, gliding to each GPS update over 1 s, frames from map pictures
+  while it moves and one sharp drawing at rest, missing pictures drawn on a timer; the dashboard's
+  zoom is saved in `dashboard-settings.txt`). `fonts/`
   holds the Barlow TTFs (SIL OFL) shipped next to the exe. The agreed design is the design canvas
   linked in the research doc's "Dashboard" section: panels are tinted, never blurred (processor
   time), icons are drawn on a pixel grid for the low-resolution screen, graphs are lines through
   every sample (0.4's smooth curves averaged short changes away), times are 12-hour with AM/PM,
-  and the map starts at the highest zoom its files hold. `src/map.c` (offline map: reads `*.pack`
-  files of the dark and light styles, composes the view, tints panels) and `src/pngdec.c` (PNG decoding through the vendored
-  `third_party/stb_image.h`) are portable C too, and so is `src/addr.c` (offline address: reads the
-  `*.addr` file, nearest named road, barangay, city, province).
+  and the map starts at zoom 16 (large print: text, lines and dots twice their zoom 15 size), then
+  at the last zoom chosen. `src/map.c` (the picture map of 0.2 to 0.8: reads `*.pack` files;
+  no longer compiled into the dashboard, its tests still run) and `src/pngdec.c` (PNG decoding and
+  zlib inflating through the vendored `third_party/stb_image.h`) are portable C too, and so is `src/addr.c` (offline address: reads the
+  `*.addr` file, nearest named road, barangay, city, province). So are `src/holiday.c` (reads
+  `holidays.txt`: today's national holidays, and local ones for the town whose centre is nearest the
+  GPS position, from the file's own town table; never the map or the address file, the user's rule,
+  since the map will be replaced) and `src/island.c` (the holiday notification's movement: a round
+  button left of the map that grows into a panel and back, every move worked out from its start
+  time); `dash.c` redraws only the notification's area while it moves (a copy of the screen under
+  it, a 15 ms timer). `holidays.txt` is generated (below) and committed.
+- `tools/holidays/`: the holiday list. `national.tsv` (yearly proclamations), `local-2026.tsv`
+  (one proclamation per local day, from lawphil.net), `laws.tsv` (holidays fixed by law, every
+  year), `towns.tsv` (771 Luzon cities and municipalities, centre and area, from Wikidata by
+  `fetch_towns.py`); `build_holidays.py` writes `dashboard/holidays.txt` and holds the reference
+  lookup the C reader must match.
 - `tools/map/`: builds the offline map on the Mac (Luzon by default) from OpenStreetMap data:
   `mtpack.py` (the `.pack` format, shared with `map.c`), `build_map.sh` (planetiler and
   tileserver-gl in Docker, then `build_map.py`, the packer), `make_style.py` and
@@ -55,6 +75,20 @@ The repository root mirrors the SD card root, plus reference material:
   extract: `mtaddr.py` (the `.addr` format and the reference lookup that `addr.c` must match),
   `build_address.sh` (osmium-tool in Docker, then `build_address.py`), `check_address.py`
   (coverage report).
+- Vector map (the dashboard's map since 0.9; `dasmarinas.vmap` is the pilot and test file,
+  `luzon.vmap` the full map): a map the unit draws itself from shapes, at any zoom and rotation. `tools/vmap/`: `mvt.py` (vector tile decoder),
+  `mtvmap.py` (the `.vmap` format), `build_vmap.py` (reads the Luzon vector tiles in
+  `dist/map-build/`, compiles both map styles into drawing rules; output `dist/vmap/VMap/`, never
+  `dist/map/`). Portable C in `dashboard/src/`: `vraster.c` (smooth-edged filling and line
+  outlines in whole-number maths), `vfont.c` (TrueType letters as outlines), `vmap.c` (the
+  renderer: tiles, layers, labels along roads, kept letter pictures, place markers), `vicons.c`
+  (16 x 16 pixel-grid pictograms of the markers), `vtiles.c` (map pictures: the map drawn once into
+  256 x 256 pictures with a 1-pixel border, kept in memory, moved, turned and scaled per frame,
+  turned frames in chunks for the cache). The unit's Cortex-A9 runs ARMv7 code (VMapTest is built
+  for it) but does not allow NEON (illegal instruction, 2026-11-18).
+  `vmaptest/`: `VMapTest.exe`, a test program for the car, started from Total Commander, that logs
+  drawing times. Details and figures in the research doc's "Vector map pilot". The user's rule:
+  never simplify the map for speed (no layers left out at any zoom); speed comes from memory.
 - `tools/re/`: reverse-engineering helpers for the head unit files.
 - `docs/vehicle-data-research.md`: what vehicle data exists on the unit and how it flows. Read this
   before any dashboard or data-access work, and update it when new findings land.
@@ -91,7 +125,7 @@ Dashboard build and checks (same Docker image):
 ```sh
 ./tools/build_dashboard.sh                  # -> dist/dashboard/Navigation/ (adds Total Commander if built)
 python3 -m unittest tests.test_dashboard -v # model, sun, drawing calls, SVG previews (host C compiler)
-DASHBOARD_PREVIEW_DIR=/some/new/dir python3 -m unittest tests.test_dashboard   # keep the 8 previews
+DASHBOARD_PREVIEW_DIR=/some/new/dir python3 -m unittest tests.test_dashboard   # keep the 14 previews
 ```
 
 The previews go through the same `render.c` with text widths read from the Barlow files, so they
@@ -110,6 +144,7 @@ into `dist/map-build/` the first time; other running containers can starve plane
 ```sh
 tools/map/build_map.sh                                   # Luzon, zoom 8 to 14 -> dist/map/Map
 tools/map/build_map.sh --min-zoom 15 --max-zoom 15       # add zoom 15 (separate pack file)
+tools/map/build_map.sh --min-zoom 16 --max-zoom 16       # add zoom 16, large print (about 1 GB, 40 min)
 MAP_STYLE=light tools/map/build_map.sh                   # the light day map -> dist/map/Map/Day
 python3 tools/map/make_style.py                          # rewrite both styles after a colour change
 tools/map/build_map.sh --bounds W,S,E,N --output DIR     # another area; must lie inside MAP_VECTOR_BOUNDS
@@ -118,13 +153,28 @@ python3 -m unittest tests.test_map_tools tests.test_map_reader -v   # packer, st
 ./tools/address/build_address.sh                         # -> dist/map/Map/luzon.addr (about 1 min)
 ./tools/address/build_address.sh --check                 # the same plus the coverage report
 python3 -m unittest tests.test_address_tools tests.test_addr_reader -v   # builder; C reader vs reference
+python3 tools/holidays/build_holidays.py                  # -> dashboard/holidays.txt (after editing tools/holidays/*.tsv)
+python3 tools/holidays/fetch_towns.py                     # refresh towns.tsv from Wikidata (network)
+python3 -m unittest tests.test_holidays -v                # list up to date, sources, C reader vs reference
+python3 tools/vmap/build_vmap.py                         # vector map pilot -> dist/vmap/VMap/dasmarinas.vmap (15 s)
+python3 tools/vmap/build_vmap.py --bounds 119.4,12.4,124.5,18.8 --name luzon   # all Luzon -> luzon.vmap (227 MB, 7 min)
+./tools/build_vmaptest.sh                                # -> dist/vmaptest/VMapTest/ (+ import lists)
+python3 -m unittest tests.test_vmap -v                   # vector map: format, style, filler, renderer
+VMAP_PREVIEW_DIR=/some/new/dir python3 -m unittest tests.test_vmap   # keep the real-map previews
 ```
+
+Zoom 16 is the large print level: `make_style.py` gives lines and dots a zoom 16 stop at twice
+their zoom 15 width and each label layer a `-large` copy from zoom 16, because the renderer places
+labels using their size one level further in (a zoom 16 text size would move zoom 15 labels).
+Any style change starts a fresh tile cache, and the sea shortcut reads the level above from that
+cache, so render zoom 8 to 15 again (into a throwaway `--output`) before zoom 16.
 
 The address and the position are shown on screen only: never write either to a log.
 
-`dashboard_preview FONT_DIR OUT_DIR MAP_DIR LAT LON` (built as in `tests/test_map_reader.py`)
-renders the previews with a real map composed by `map.c` (the light map from `MAP_DIR/Day` by day,
-when it is there); the demo drive's time zone follows LON, so its 14:32 scene is daytime anywhere.
+`dashboard_preview FONT_DIR OUT_DIR MAP_DIR LAT LON` (built as in `tests/test_vmap.py`
+`DashboardMapTests`) renders the previews with the real vector map: the first `*.vmap` in
+`MAP_DIR` (for example `dist/vmap/VMap`, with 14.3010 120.9555 inside Dasmarinas); the demo
+drive's time zone follows LON, so its 14:32 scene is daytime anywhere.
 
 The Total Commander build refuses to overwrite an existing `--output` directory. On macOS,
 `test_verify_is_offline_and_read_only` fails because `verify_sd` resolves the `/var` to
@@ -171,6 +221,8 @@ python3 -m venv .venv && .venv/bin/pip install -r tools/re/requirements.txt
   `Main.exe`'s memory (`[0xbe4b8]` → popup, `+0xe4` → fan bar, `+0x7C` → value), only after checking
   the `Main.exe` file size, and only trusts in-range values; nothing on the unit reads steering angle, yaw, pitch,
   roll, RPM or coolant. No USB serial driver is installed (HID, mass storage, Bluetooth dongles are).
+  No Wi-Fi on the Windows CE side (the factory Wi-Fi mirroring is an outside video input) and no
+  Bluetooth network profile; the only internet route is USB networking (`USB8023`, untested).
 - `Main.exe` shows and hides the navigation app with `FindWindowW(NULL, "GPS - Navigation")` +
   `ShowWindow`, so the dashboard's main window gets that title and it must not join the bus as Navi.
 

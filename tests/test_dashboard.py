@@ -1,8 +1,8 @@
 """Compile and run the dashboard's portable code on the build machine.
 
 The self-test covers the model rules (GPS-first elevation and heading, speeds, trends, battery),
-sunrise and sunset, and the drawing calls. The preview test renders eight screens (five of the
-dashboard, three of the car info page) to SVG through
+sunrise and sunset, and the drawing calls. The preview test renders fourteen screens (five of the
+dashboard, three of the car info page, two of the map page, four of the holiday notification) to SVG through
 the same render.c the head unit uses; set DASHBOARD_PREVIEW_DIR to keep them for a look.
 """
 from pathlib import Path
@@ -16,10 +16,13 @@ import xml.etree.ElementTree as ET
 ROOT = Path(__file__).resolve().parents[1]
 COMPILER = shutil.which("cc") or shutil.which("gcc") or shutil.which("clang")
 SOURCES = ["dashboard/src/model.c", "dashboard/src/render.c", "dashboard/src/sun.c",
-           "dashboard/src/map.c", "dashboard/src/pngdec.c", "dashboard/src/addr.c",
+           "dashboard/src/mapview.c", "dashboard/src/vmap.c", "dashboard/src/vtiles.c", "dashboard/src/vraster.c",
+           "dashboard/src/vfont.c", "dashboard/src/vicons.c", "dashboard/src/pngdec.c", "dashboard/src/addr.c",
+           "dashboard/src/holiday.c", "dashboard/src/island.c",
            "probe/src/nmea.c", "probe/src/carinfo.c"]
 SCENES = ["driving.svg", "parked-night.svg", "no-gps.svg", "startup.svg", "menu.svg", "carinfo.svg",
-          "carinfo-size.svg", "carinfo-night.svg"]
+          "carinfo-size.svg", "carinfo-night.svg", "mappage.svg", "mappage-night.svg", "holiday.svg",
+          "holiday-opening.svg", "holiday-dot.svg", "holiday-night.svg"]
 
 
 def build(main, binary):

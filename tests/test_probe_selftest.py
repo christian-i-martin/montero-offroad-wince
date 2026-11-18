@@ -1,4 +1,4 @@
-"""Compile and run the C self-test for the probe's bus ring reader and NMEA parser."""
+"""Compile and run the C self-test for the probe's bus ring reader, NMEA parser and status table."""
 from pathlib import Path
 import shutil
 import subprocess
@@ -16,7 +16,8 @@ class ProbeSelfTest(unittest.TestCase):
             binary = Path(temp) / "probe_selftest"
             subprocess.run([COMPILER, "-std=c99", "-Wall", "-Werror", "-I", str(ROOT / "probe/src"),
                             "-o", str(binary), str(ROOT / "tests/c/probe_selftest.c"),
-                            str(ROOT / "probe/src/busring.c"), str(ROOT / "probe/src/nmea.c")], check=True)
+                            str(ROOT / "probe/src/busring.c"), str(ROOT / "probe/src/nmea.c"),
+                            str(ROOT / "probe/src/sysinfo.c")], check=True)
             result = subprocess.run([str(binary)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
